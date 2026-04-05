@@ -1,0 +1,35 @@
+{
+  "claude": {
+    "command": "claude",
+    "project_dir": "C:/Users/Ryan/openclaw/Nami",
+    "model": "opus",
+    "permission_mode": "default",
+    "dangerously_skip_permissions": true,
+    "mcp_config": null,
+    "extra_args": ["--channels", "plugin:telegram@claude-plugins-official"]
+  },
+  "session": {
+    "auto_restart": true,
+    "max_restart_attempts": 3,
+    "restart_delay_seconds": 5,
+    "health_check_interval": 300,
+    "health_check_timeout": 60
+  },
+  "schedule": {
+    "morning_report": {
+      "enabled": true,
+      "cron": "30 10 * * 1-6",
+      "prompt": "跑晨報：EMA530 + KAS 威科夫分析，發到 Telegram"
+    },
+    "heartbeat": {
+      "enabled": true,
+      "cron": "*/30 * * * *",
+      "prompt": "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK."
+    }
+  },
+  "logging": {
+    "dir": "logs",
+    "max_size_mb": 50,
+    "rotate_count": 5
+  }
+}
