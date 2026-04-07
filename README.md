@@ -2,9 +2,7 @@
 
 **Give your Claude Code a soul — persistent identity, memory, and autonomy.**
 
-ClawX is a thin PTY wrapper + soul framework for [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). It recreates the persistent AI agent experience using only compliant, official tools — no subscription platform needed.
-
-> **Why?** Anthropic doesn't offer a subscription-based always-on agent. ClawX bridges that gap: a set of tiny config files that give Claude Code persistent identity, memory, heartbeat, and scheduled tasks — all within the official CLI.
+ClawX is a thin PTY wrapper + soul framework for [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). A set of tiny config files that give Claude Code persistent identity, memory, heartbeat, and scheduled tasks — all within the official CLI.
 
 ## How It Works
 

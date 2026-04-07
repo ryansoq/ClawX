@@ -2,9 +2,7 @@
 
 **讓你的 Claude Code 擁有靈魂 — 持久身份、記憶、自主能力。**
 
-ClawX 是 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 的輕量 PTY 外殼 + 靈魂框架。用合規的官方工具重建持久 AI Agent 體驗 — 不需要訂閱制平台。
-
-> **為什麼？** Anthropic 沒有提供訂閱制的常駐 agent 服務。ClawX 填補了這個空缺：一組小小的設定檔，讓 Claude Code 擁有持久身份、記憶、心跳和排程任務 — 全部在官方 CLI 框架內運作。
+ClawX 是 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 的輕量 PTY 外殼 + 靈魂框架。一組小小的設定檔，讓 Claude Code 擁有持久身份、記憶、心跳和排程任務 — 全部在官方 CLI 框架內運作。
 
 ## 運作原理
 
