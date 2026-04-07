@@ -121,8 +121,8 @@ class ClawX:
             return False
         with self.write_lock:
             try:
-                # Write text + Enter
-                data = (text + "\n").encode("utf-8")
+                # Write text + carriage return (Enter in raw terminal mode)
+                data = (text + "\r").encode("utf-8")
                 os.write(self.master_fd, data)
                 self.logger.info(f"[Inject] {text[:200]}")
                 return True
