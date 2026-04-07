@@ -283,6 +283,31 @@ class ClawX:
         if sys.stdin.isatty():
             old_attrs = termios.tcgetattr(sys.stdin.fileno())
 
+        # Show banner
+        cmd = self.build_command()
+        print("\033[1;36m" + "=" * 55)
+        print("  🦀 ClawX — Claude Code PTY Wrapper")
+        print("=" * 55 + "\033[0m")
+        print(f"\033[90m  Command:  {' '.join(cmd)}")
+        print(f"  Project:  {self._get_project_dir()}")
+        print(f"  FIFO:     {FIFO_PATH}")
+        print(f"  Log:      {LOG_DIR}/")
+        print()
+        print("  \033[1mInject from another terminal:\033[0m")
+        print(f"\033[90m    echo \"your message\" > {FIFO_PATH}")
+        print(f"    python3 clawx.py inject \"your message\"")
+        print()
+        print("  \033[1mScheduled jobs:\033[0m")
+        schedules = self.config.get("schedule", {})
+        if schedules:
+            for name, sched in schedules.items():
+                if sched.get("enabled"):
+                    print(f"\033[90m    ⏰ {name}: {sched['cron']} — {sched['prompt'][:50]}...")
+        else:
+            print("\033[90m    (none)")
+        print("\033[0m" + "\033[1;36m" + "=" * 55 + "\033[0m")
+        print()
+
         # Spawn Claude
         self._spawn_claude()
 
