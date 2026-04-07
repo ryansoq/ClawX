@@ -1,131 +1,192 @@
-# ClaudexClaw
+# 🦀 ClawX
 
-Claude Code supervisor daemon — 管理、監控、排程長期運行的 Claude Code sessions，帶有靈魂。
+**讓你的 Claude Code 擁有靈魂 — 持久身份、記憶、自主能力。**
 
-## 包含什麼
+ClawX 是 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 的輕量 PTY 外殼 + 靈魂框架。用合規的官方工具重建持久 AI Agent 體驗 — 不需要訂閱制平台。
 
-```
-ClaudexClaw/
-├── clawx.py              # Supervisor daemon
-├── config.json           # 啟動 & 排程設定
-├── CLAUDE.md             # Bootstrap — 啟動整個系統的入口
-├── AGENTS.md             # Agent 行為規範 & 記憶系統
-├── SOUL.md               # Agent 個性 & 價值觀
-├── USER.md               # 關於你的人類（請填入資訊）
-├── HEARTBEAT.md          # 定期檢查項目
-├── MEMORY.md             # 長期記憶索引
-├── memory/               # 每日記憶日誌
-├── README.md             # English docs
-└── README_zh.md          # 中文文件
-```
+> **為什麼？** Anthropic 沒有提供訂閱制的常駐 agent 服務。ClawX 填補了這個空缺：一組小小的設定檔，讓 Claude Code 擁有持久身份、記憶、心跳和排程任務 — 全部在官方 CLI 框架內運作。
 
 ## 運作原理
 
-Claude Code 啟動時會先讀 `CLAUDE.md`，這個檔案會引導整個系統啟動：
-
-1. `CLAUDE.md` → 告訴 Claude 去讀 `AGENTS.md`
-2. `AGENTS.md` → 告訴 Claude 去讀 `SOUL.md`、`USER.md` 和記憶檔案
-3. Agent 帶著完整 context 醒來：知道自己是誰、你是誰、最近發生了什麼
-4. 心跳啟動、排程任務開始跑，agent 活起來了
-
-`clawx.py` 是 supervisor，負責讓 session 持續運行 — 自動重啟、健康檢查、cron 排程。
-
-## 安裝方式
-
-### 方式 A：直接用這個 repo 當專案目錄
-
-Clone 下來，填好 `USER.md`，自訂 `HEARTBEAT.md`，直接開跑。
-
-```bash
-git clone https://github.com/ryansoq/ClaudexClaw.git
-cd ClaudexClaw
-
-# 編輯 USER.md 填入你的資訊
-# 編輯 config.json（設定 project_dir、model 等）
-
-pip install apscheduler
-python clawx.py
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        ClawX                                │
+│                                                             │
+│   ┌─────────────┐    ┌──────────────────────────────────┐   │
+│   │  clawx.py   │───>│  Claude Code CLI (PTY)           │   │
+│   │  ─────────  │    │  ┌────────────────────────────┐  │   │
+│   │  排程器     │    │  │ CLAUDE.md（引導啟動）      │  │   │
+│   │  FIFO 注入  │    │  │   └→ BOOTSTRAP.md（首次）  │  │   │
+│   │  自動重啟   │    │  │   └→ AGENTS.md             │  │   │
+│   │  記錄轉寫   │    │  │       └→ SOUL.md（我是誰） │  │   │
+│   └─────────────┘    │  │       └→ USER.md（你是誰） │  │   │
+│                      │  │       └→ IDENTITY.md       │  │   │
+│   ┌─────────────┐    │  │       └→ MEMORY.md         │  │   │
+│   │ mono.fifo   │───>│  │       └→ memory/*.md       │  │   │
+│   │（注入管道） │    │  │   └→ HEARTBEAT.md          │  │   │
+│   └─────────────┘    │  └────────────────────────────┘  │   │
+│                      └──────────────────────────────────┘   │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  通訊頻道：Telegram / Discord / ...                 │   │
+│   └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 方式 B：把靈魂文件複製到現有專案
+### 啟動流程
 
-如果你已經有一個專案目錄（例如 OpenClaw workspace），把靈魂文件複製過去，用 `clawx.py` 當啟動器：
+```
+首次啟動：
+  CLAUDE.md → BOOTSTRAP.md → 對話 → 填入 IDENTITY.md + USER.md → 刪除 BOOTSTRAP.md
 
-```bash
-# 把靈魂文件複製到你的專案
-cp CLAUDE.md AGENTS.md SOUL.md USER.md HEARTBEAT.md MEMORY.md /path/to/your/project/
-mkdir -p /path/to/your/project/memory
-
-# 更新 config.json 指向你的專案
-# "project_dir": "/path/to/your/project"
-
-python clawx.py
+之後每次啟動：
+  CLAUDE.md → AGENTS.md → SOUL.md + USER.md + IDENTITY.md + memory/ → HEARTBEAT.md → 上線
 ```
 
-### 方式 C：把 clawx.py 複製到現有專案
+1. **首次啟動** — `BOOTSTRAP.md` 引導一場對話，你和 agent 一起決定它的名字、個性和風格。它會填入 `IDENTITY.md` 和 `USER.md`，然後自我刪除。
+2. **之後每次** — Claude 讀取 `AGENTS.md`，載入靈魂（`SOUL.md`）、你的資訊（`USER.md`）、身份（`IDENTITY.md`）和近期記憶。Agent 醒來時知道自己是誰、你是誰、最近發生了什麼。
+3. **心跳** — 定期檢查（硬碟空間、加密貨幣價格、行事曆等）透過 `HEARTBEAT.md` 自動執行。
+4. **排程任務** — Cron 在設定的時間注入 prompt（晨報、提醒等）。
 
-或者把 `clawx.py` 和 `config.json` 搬到已經有 `CLAUDE.md` 的專案裡：
+### PTY 外殼
 
-```bash
-cp clawx.py config.json /path/to/your/project/
-cd /path/to/your/project
+ClawX 在偽終端中執行 Claude Code。你看到的**跟直接跑 `claude` 完全一樣** — 顏色、進度條、動畫 — 但多了：
+- **FIFO 注入** — 從任何終端送 prompt：`echo "你好" > mono.fifo`
+- **排程注入** — apscheduler 按 cron 排程觸發 prompt
+- **自動重啟** — Claude 掛了，ClawX 會自動拉起來
+- **轉寫記錄** — 完整 session 存到 `logs/`
 
-# 編輯 config.json："project_dir": "./"
-python clawx.py
+## 專案結構
+
 ```
-
-關鍵是 `CLAUDE.md` 必須存在於專案目錄中 — 它是啟動 agent 靈魂的入口。
+ClawX/
+├── clawx.py              # PTY 外殼 + 排程器
+├── config.json           # 啟動 & 排程設定
+│
+├── CLAUDE.md             # 引導啟動入口
+├── BOOTSTRAP.md          # 首次啟動儀式（完成後自刪）
+├── AGENTS.md             # Agent 行為規範 & 記憶系統
+├── SOUL.md               # Agent 個性 & 價值觀
+├── IDENTITY.md           # Agent 身份卡（名字、emoji、風格）
+├── USER.md               # 關於你的人類
+├── TOOLS.md              # 環境特定的筆記
+│
+├── HEARTBEAT.md          # 定期檢查項目
+├── heartbeat-config.json # 心跳間隔 & 安靜時段
+├── MEMORY.md             # 長期記憶索引
+└── memory/               # 每日記憶日誌
+```
 
 ## 快速開始
 
 ```bash
-# 安裝依賴（排程功能需要）
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+
+# 選裝：排程功能需要
 pip install apscheduler
 
-# 啟動 daemon（會自動開 Claude CLI session）
+# 啟動 — 畫面跟 `claude` 一模一樣，但有超能力
 python clawx.py
-
-# 一次性指令（不需要 daemon）
-python clawx.py prompt "跑晨報"
-
-# 查看狀態
-python clawx.py status
-
-# 停止
-python clawx.py stop
 ```
 
-## 架構
+首次啟動時，agent 會自我介紹並詢問你是誰。自然對話就好。
 
-```
-ClaudexClaw (supervisor)
-├── 生命週期管理：啟動 / 監控 / 自動重啟 Claude CLI
-├── 排程系統：cron-based，不依賴 session（apscheduler）
-├── 指令注入：送 prompt 到 running session
-└── 日誌：所有 session 輸出都存 logs/
+### CLI 指令
 
-Claude CLI (worker)
-├── CLAUDE.md bootstrap → AGENTS.md → SOUL.md + USER.md
-├── MCP plugins (Telegram, etc.)
-├── 心跳檢查
-└── 日常工作 & 記憶管理
+```bash
+python clawx.py                    # 啟動（PTY 透傳）
+python clawx.py inject "訊息"      # 注入到執行中的 session
+python clawx.py prompt "訊息"      # 一次性執行（獨立 process）
+python clawx.py stop               # 停止執行中的 session
 ```
 
-## 設定：config.json
+### 注入訊息
 
-- `claude`：CLI 路徑、專案目錄、model、權限模式、額外參數（如 `--channels`）
-- `session`：自動重啟策略、健康檢查間隔
-- `schedule`：cron 排程（晨報、心跳等）
-- `logging`：log 目錄、大小限制、輪替
+ClawX 執行中，從另一個終端：
 
-## Telegram 整合
+```bash
+# 透過 FIFO（最簡單）
+echo "執行晨報" > mono.fifo
 
-在 config.json 的 `extra_args` 加上 `--channels plugin:telegram@claude-plugins-official`（預設已包含）。完整 Telegram 設定請看 `CLAUDE.md`。
+# 透過 CLI
+python clawx.py inject "執行晨報"
+```
 
-## TODO
+## 設定
 
-- [ ] IPC socket：讓 `clawx.py send` 能跟 running daemon 溝通
-- [ ] Web dashboard：簡單的狀態頁面
-- [ ] Context 管理：偵測 context 快滿 → 優雅重啟
-- [ ] 多 session 支援：同時管理多個 agent
-- [ ] Windows service / systemd unit
+### config.json
+
+```json
+{
+  "claude": {
+    "command": "claude",
+    "project_dir": "./",
+    "model": "opus",
+    "permission_mode": null,
+    "extra_args": ["--channels", "plugin:telegram@claude-plugins-official"]
+  },
+  "session": {
+    "auto_restart": true,
+    "max_restart_attempts": 3,
+    "restart_delay_seconds": 5,
+    "health_check_interval": 300
+  },
+  "schedule": {
+    "heartbeat": {
+      "enabled": true,
+      "cron": "*/30 * * * *",
+      "prompt": "Read HEARTBEAT.md if it exists. Follow it strictly."
+    }
+  }
+}
+```
+
+| 欄位 | 說明 |
+|------|------|
+| `model` | Claude 模型（`opus`、`sonnet`、`haiku`） |
+| `permission_mode` | `null` = 跳過權限（預設），`"default"` = 正常模式 |
+| `extra_args` | 額外 CLI 參數（如 `--channels` 接 Telegram） |
+| `schedule` | Cron 排程，時間到自動注入 prompt |
+
+### Telegram 整合
+
+在 `extra_args` 加上 `--channels plugin:telegram@claude-plugins-official`（預設已包含）。詳見 `CLAUDE.md`。
+
+## 安裝方式
+
+### A. 直接用這個 repo
+
+Clone 下來，跑 `python clawx.py`，跟你的 agent 聊天。
+
+### B. 把靈魂文件複製到現有專案
+
+```bash
+cp CLAUDE.md AGENTS.md SOUL.md USER.md IDENTITY.md BOOTSTRAP.md \
+   HEARTBEAT.md MEMORY.md TOOLS.md /path/to/project/
+mkdir -p /path/to/project/memory
+# config.json → "project_dir": "/path/to/project"
+```
+
+### C. 把 clawx.py 複製到你的專案
+
+```bash
+cp clawx.py config.json /path/to/project/
+cd /path/to/project
+python clawx.py
+```
+
+## 設計理念
+
+傳統 AI 助手是無狀態的 — 每次對話從零開始。ClawX 給 Claude Code：
+
+- **身份** — 名字、個性、價值觀，跨 session 持續
+- **記憶** — 每日日誌 + 策劃過的長期記憶
+- **自主性** — 心跳、排程任務、主動行為
+- **關係** — 記得你是誰、你們怎麼合作
+
+全部建立在小小的 markdown 檔案上。不需要資料庫、雲服務、訂閱。只有檔案和官方 Claude Code CLI。
+
+## License
+
+MIT

@@ -1,56 +1,81 @@
 # 🦀 ClawX
 
-A thin PTY wrapper around Claude Code CLI — same UI, with superpowers.
+**Give your Claude Code a soul — persistent identity, memory, and autonomy.**
 
-ClawX runs Claude Code in a pseudo-terminal so you get the **exact same interactive experience**, plus:
-- **Message injection** via FIFO pipe — send prompts from any terminal
-- **Scheduled tasks** via cron (apscheduler) — heartbeats, morning reports, etc.
-- **Auto-restart** on crash
-- **Transcript logging** — everything saved to file
+ClawX is a thin PTY wrapper + soul framework for [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). It recreates the persistent AI agent experience using only compliant, official tools — no subscription platform needed.
 
-## What's Inside
+> **Why?** Anthropic doesn't offer a subscription-based always-on agent. ClawX bridges that gap: a set of tiny config files that give Claude Code persistent identity, memory, heartbeat, and scheduled tasks — all within the official CLI.
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        ClawX                                │
+│                                                             │
+│   ┌─────────────┐    ┌──────────────────────────────────┐   │
+│   │  clawx.py   │───>│  Claude Code CLI (PTY)           │   │
+│   │  ─────────  │    │  ┌────────────────────────────┐  │   │
+│   │  Scheduler  │    │  │ CLAUDE.md (bootstrap)      │  │   │
+│   │  FIFO inject│    │  │   └→ BOOTSTRAP.md (1st run)│  │   │
+│   │  Auto-restart    │  │   └→ AGENTS.md             │  │   │
+│   │  Transcript │    │  │       └→ SOUL.md (who I am)│  │   │
+│   └─────────────┘    │  │       └→ USER.md (who you) │  │   │
+│                      │  │       └→ IDENTITY.md       │  │   │
+│   ┌─────────────┐    │  │       └→ MEMORY.md         │  │   │
+│   │ mono.fifo   │───>│  │       └→ memory/*.md       │  │   │
+│   │ (injection) │    │  │   └→ HEARTBEAT.md          │  │   │
+│   └─────────────┘    │  └────────────────────────────┘  │   │
+│                      └──────────────────────────────────┘   │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  Channels: Telegram / Discord / ...                 │   │
+│   └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### The Boot Sequence
+
+```
+First run:
+  CLAUDE.md → BOOTSTRAP.md → Conversation → fills IDENTITY.md + USER.md → deletes BOOTSTRAP.md
+
+Every session after:
+  CLAUDE.md → AGENTS.md → SOUL.md + USER.md + IDENTITY.md + memory/ → HEARTBEAT.md → alive
+```
+
+1. **First run** — `BOOTSTRAP.md` guides a conversation where you and the agent figure out its name, personality, and vibe together. It fills in `IDENTITY.md` and `USER.md`, then deletes itself.
+2. **Every session** — Claude reads `AGENTS.md`, which loads its soul (`SOUL.md`), your info (`USER.md`), identity (`IDENTITY.md`), and recent memory. The agent wakes up knowing who it is, who you are, and what happened.
+3. **Heartbeat** — Periodic checks (disk space, crypto prices, calendar, etc.) run automatically via `HEARTBEAT.md`.
+4. **Scheduled tasks** — Cron jobs inject prompts at set times (morning reports, reminders, etc.).
+
+### The PTY Wrapper
+
+ClawX runs Claude Code in a pseudo-terminal. You get the **exact same interactive UI** — colors, progress bars, animations — plus:
+- **FIFO injection** — send prompts from any terminal: `echo "hello" > mono.fifo`
+- **Scheduled injection** — apscheduler fires prompts on cron schedules
+- **Auto-restart** — if Claude crashes, ClawX brings it back
+- **Transcript logging** — full session saved to `logs/`
+
+## Project Structure
 
 ```
 ClawX/
 ├── clawx.py              # PTY wrapper + scheduler
 ├── config.json           # Launch & schedule config
-├── CLAUDE.md             # Bootstrap — the entry point that boots everything
+│
+├── CLAUDE.md             # Bootstrap entry point
+├── BOOTSTRAP.md          # First-run ritual (self-deleting)
 ├── AGENTS.md             # Agent behavior rules & memory system
 ├── SOUL.md               # Agent personality & values
-├── USER.md               # About your human (fill this in)
+├── IDENTITY.md           # Agent identity card (name, emoji, vibe)
+├── USER.md               # About your human
+├── TOOLS.md              # Environment-specific notes
+│
 ├── HEARTBEAT.md          # Periodic check items
+├── heartbeat-config.json # Heartbeat interval & quiet hours
 ├── MEMORY.md             # Long-term memory index
-├── memory/               # Daily memory logs
-├── README.md             # English docs
-└── README_zh.md          # 中文文件
+└── memory/               # Daily memory logs
 ```
-
-## How It Works
-
-ClawX spawns Claude Code in a PTY (pseudo-terminal), so Claude thinks it's running in a real terminal. Everything renders exactly as if you ran `claude` directly — colors, progress bars, tool animations, all of it.
-
-On top of that, ClawX can **inject text** into Claude's input at any time:
-
-```
-┌──────────────────────────────────────────┐
-│  Your Terminal                           │
-│  ┌────────────────────────────────────┐  │
-│  │  ClawX (PTY wrapper)              │  │
-│  │  ┌──────────────────────────────┐  │  │
-│  │  │  Claude Code CLI             │  │  │
-│  │  │  (interactive, full UI)      │  │  │
-│  │  └──────────────────────────────┘  │  │
-│  │       ↑ inject via FIFO / cron     │  │
-│  └────────────────────────────────────┘  │
-└──────────────────────────────────────────┘
-```
-
-When Claude Code starts, it reads `CLAUDE.md` first. This file bootstraps the entire agent system:
-
-1. `CLAUDE.md` → tells Claude to read `AGENTS.md`
-2. `AGENTS.md` → tells Claude to read `SOUL.md`, `USER.md`, and memory files
-3. The agent wakes up with full context: who it is, who you are, and what happened recently
-4. Heartbeat starts, scheduled tasks run, the agent is alive
 
 ## Quick Start
 
@@ -58,41 +83,27 @@ When Claude Code starts, it reads `CLAUDE.md` first. This file bootstraps the en
 git clone https://github.com/ryansoq/ClawX.git
 cd ClawX
 
-# Edit USER.md with your info
-# Edit config.json (set project_dir, model, etc.)
-
-# Optional: install for scheduled tasks
+# Optional: for scheduled tasks
 pip install apscheduler
 
-# Start — looks exactly like running `claude` directly
+# Start — looks exactly like `claude` but with superpowers
 python clawx.py
 ```
 
-On startup you'll see:
+On first run, the agent will introduce itself and ask who you are. Just talk naturally.
 
-```
-=======================================================
-  🦀 ClawX — Claude Code PTY Wrapper
-=======================================================
-  Command:  claude --add-dir /path/to --model opus ...
-  Project:  /home/you/your-project
-  FIFO:     /home/you/your-project/mono.fifo
-  Log:      /home/you/your-project/logs/
+### CLI Commands
 
-  Inject from another terminal:
-    echo "your message" > mono.fifo
-    python3 clawx.py inject "your message"
-
-  Scheduled jobs:
-    ⏰ heartbeat: */30 * * * * — Read HEARTBEAT.md...
-=======================================================
+```bash
+python clawx.py                    # Start (PTY passthrough)
+python clawx.py inject "message"   # Inject into running session
+python clawx.py prompt "message"   # One-shot (separate process)
+python clawx.py stop               # Stop running session
 ```
 
-Then Claude's full interactive UI takes over.
+### Injecting Messages
 
-## Injecting Messages
-
-From another terminal while ClawX is running:
+While ClawX is running, from another terminal:
 
 ```bash
 # Via FIFO (simplest)
@@ -102,9 +113,9 @@ echo "run morning report" > mono.fifo
 python clawx.py inject "run morning report"
 ```
 
-The text appears in Claude's input and gets submitted automatically — as if you typed it.
+## Configuration
 
-## Configuration: config.json
+### config.json
 
 ```json
 {
@@ -113,7 +124,6 @@ The text appears in Claude's input and gets submitted automatically — as if yo
     "project_dir": "./",
     "model": "opus",
     "permission_mode": null,
-    "mcp_config": null,
     "extra_args": ["--channels", "plugin:telegram@claude-plugins-official"]
   },
   "session": {
@@ -132,26 +142,33 @@ The text appears in Claude's input and gets submitted automatically — as if yo
 }
 ```
 
-- **`permission_mode`**: Set to `null` for `--dangerously-skip-permissions` (default), or `"default"` for normal mode
-- **`extra_args`**: Add `--channels` for Telegram/Discord integration
-- **`schedule`**: Cron jobs that inject prompts on schedule
+| Field | Description |
+|-------|-------------|
+| `model` | Claude model (`opus`, `sonnet`, `haiku`) |
+| `permission_mode` | `null` = skip permissions (default), `"default"` = normal mode |
+| `extra_args` | Additional CLI args (e.g. `--channels` for Telegram) |
+| `schedule` | Cron jobs that inject prompts on schedule |
+
+### Telegram Integration
+
+Add `--channels plugin:telegram@claude-plugins-official` to `extra_args` (included by default). See `CLAUDE.md` for full setup.
 
 ## Setup Options
 
-### Option A: Use this repo as your project directory
+### A. Use this repo directly
 
-Clone, customize `USER.md` and `config.json`, run `python clawx.py`.
+Clone, run `python clawx.py`, talk to your agent.
 
-### Option B: Copy soul files into an existing project
+### B. Copy soul files into an existing project
 
 ```bash
-cp CLAUDE.md AGENTS.md SOUL.md USER.md HEARTBEAT.md MEMORY.md /path/to/project/
+cp CLAUDE.md AGENTS.md SOUL.md USER.md IDENTITY.md BOOTSTRAP.md \
+   HEARTBEAT.md MEMORY.md TOOLS.md /path/to/project/
 mkdir -p /path/to/project/memory
-# Update config.json: "project_dir": "/path/to/project"
-python clawx.py
+# Set config.json → "project_dir": "/path/to/project"
 ```
 
-### Option C: Copy clawx.py into your project
+### C. Copy clawx.py into your project
 
 ```bash
 cp clawx.py config.json /path/to/project/
@@ -159,18 +176,16 @@ cd /path/to/project
 python clawx.py
 ```
 
-## CLI Commands
+## Philosophy
 
-```bash
-python clawx.py                    # Start (PTY passthrough)
-python clawx.py inject "message"   # Inject into running session
-python clawx.py prompt "message"   # One-shot (separate process)
-python clawx.py stop               # Stop running session
-```
+Traditional AI assistants are stateless — every conversation starts from zero. ClawX gives Claude Code:
 
-## Telegram Integration
+- **Identity** — a name, personality, and values that persist
+- **Memory** — daily logs + curated long-term memory
+- **Autonomy** — heartbeats, scheduled tasks, proactive behavior
+- **Relationships** — remembers who you are and how you work together
 
-Add `--channels plugin:telegram@claude-plugins-official` to `extra_args` in config.json (included by default). See `CLAUDE.md` for full setup instructions.
+All built on tiny markdown files. No database, no cloud service, no subscription. Just files and the official Claude Code CLI.
 
 ## License
 
