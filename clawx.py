@@ -316,7 +316,7 @@ class ClawX:
         # Show banner
         cmd = self.build_command()
         print("\033[1;36m" + "=" * 55)
-        print("  🦀 ClawX — Claude Code PTY Wrapper")
+        print("  🦞 ClawX — Claude Code PTY Wrapper")
         print("=" * 55 + "\033[0m")
         print(f"\033[90m  Command:  {' '.join(cmd)}")
         print(f"  Project:  {self._get_project_dir()}")

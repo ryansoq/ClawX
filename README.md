@@ -1,4 +1,4 @@
-# 🦀 ClawX
+# 🦞 ClawX
 
 **Give your Claude Code a soul — persistent identity, memory, and autonomy.**
 

@@ -1,4 +1,4 @@
-# 🦀 ClawX
+# 🦞 ClawX
 
 **讓你的 Claude Code 擁有靈魂 — 持久身份、記憶、自主能力。**
 
