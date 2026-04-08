@@ -291,6 +291,61 @@ class TestPathResolution:
 
 
 # ============================================================================
+# DEPENDENCY ENFORCEMENT
+# ============================================================================
+
+class TestApschedulerRequired:
+    """Test: missing apscheduler should hard-fail at startup, not silently skip."""
+
+    def test_missing_apscheduler_aborts_with_message(self, tmp_path):
+        """
+        Simulate apscheduler not being installed by injecting a sitecustomize.py
+        that blocks the apscheduler module via sys.modules sentinels. ClawX should
+        exit non-zero with a clear error message instead of running with broken
+        scheduling.
+        """
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log)
+        work = setup_workdir(tmp_path, config)
+
+        # Block apscheduler imports for any python launched with PYTHONPATH=work
+        (work / "sitecustomize.py").write_text(
+            "import sys\n"
+            "for name in list(sys.modules):\n"
+            "    if name == 'apscheduler' or name.startswith('apscheduler.'):\n"
+            "        del sys.modules[name]\n"
+            "for name in [\n"
+            "    'apscheduler',\n"
+            "    'apscheduler.schedulers',\n"
+            "    'apscheduler.schedulers.background',\n"
+            "    'apscheduler.triggers',\n"
+            "    'apscheduler.triggers.cron',\n"
+            "]:\n"
+            "    sys.modules[name] = None\n"
+        )
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(work)
+        env["MOCK_LOG"] = str(mock_log)
+
+        # Use `stop` subcommand so we don't need a full PTY session — it still
+        # imports clawx.py top-level (which is where the apscheduler check lives).
+        result = subprocess.run(
+            [sys.executable, str(work / "clawx.py"), "stop"],
+            cwd=str(work),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        assert result.returncode != 0, \
+            f"Expected non-zero exit when apscheduler missing, got 0. stdout={result.stdout!r} stderr={result.stderr!r}"
+        combined = (result.stdout + result.stderr).lower()
+        assert "apscheduler" in combined, \
+            f"Expected 'apscheduler' in error output, got: {combined}"
+
+
+# ============================================================================
 # SCHEDULE TESTS (internals + smoke)
 # ============================================================================
 

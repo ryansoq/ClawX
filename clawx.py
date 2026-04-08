@@ -37,13 +37,22 @@ from pathlib import Path
 from datetime import datetime
 from threading import Thread, Event, Lock
 
-# Optional: pip install apscheduler
+# Required: scheduling is core to ClawX (heartbeat, cron jobs).
+# Hard-fail at startup if apscheduler is missing so users don't silently
+# lose heartbeat behavior.
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
-    HAS_SCHEDULER = True
 except ImportError:
-    HAS_SCHEDULER = False
+    sys.stderr.write(
+        "\nError: apscheduler is required but not installed.\n\n"
+        "Install with one of:\n"
+        "  pip install apscheduler\n"
+        "  uv pip install apscheduler\n\n"
+        "Or run ClawX with uv (auto-installs deps from PEP 723 metadata):\n"
+        "  uv run clawx.py\n\n"
+    )
+    sys.exit(1)
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -183,10 +192,6 @@ class ClawX:
 
     def _setup_schedules(self):
         """Set up cron-based schedules."""
-        if not HAS_SCHEDULER:
-            self.logger.warning("apscheduler not installed. Run: pip install apscheduler")
-            return
-
         self.scheduler = BackgroundScheduler()
         schedules = self.config.get("schedule", {})
 
