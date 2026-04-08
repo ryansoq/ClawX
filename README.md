@@ -4,6 +4,12 @@
 
 ClawX is a thin PTY wrapper + soul framework for [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). A set of tiny config files that give Claude Code persistent identity, memory, heartbeat, and scheduled tasks — all within the official CLI.
 
+## Why ClawX?
+
+We originally used [OpenClaw](https://github.com/nichochar/openclaw) — a great project for giving AI agents persistent identity and memory. But OpenClaw moved to a subscription model, making it inaccessible for many users.
+
+So we built ClawX: a lightweight, self-hosted alternative that achieves the same goal — persistent AI identity, memory, and autonomy — using nothing but the official Claude Code CLI and a handful of markdown files. No subscription, no cloud dependency, no vendor lock-in. Just `python clawx.py` and you're running.
+
 ![ClawX Demo](demo.png)
 
 ## How It Works
