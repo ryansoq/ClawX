@@ -422,6 +422,173 @@ class TestSchedule:
 
 
 # ============================================================================
+# SIGHUP RELOAD TESTS
+# ============================================================================
+
+class TestReloadSchedules:
+    """Hot-reload via _reload_schedules(): add/remove/modify jobs without restart."""
+
+    def _import_clawx(self, work, monkeypatch):
+        monkeypatch.chdir(work)
+        sys.path.insert(0, str(work))
+        if "clawx" in sys.modules:
+            del sys.modules["clawx"]
+        import clawx as clawx_mod
+        return clawx_mod
+
+    def _cleanup(self, work):
+        if str(work) in sys.path:
+            sys.path.remove(str(work))
+        if "clawx" in sys.modules:
+            del sys.modules["clawx"]
+
+    def _rewrite_schedule(self, work, mock_log, schedule):
+        """Overwrite work/config.json with a new schedule."""
+        cfg = make_config(mock_log, schedule=schedule)
+        (work / "config.json").write_text(json.dumps(cfg, indent=2))
+
+    def test_initial_load_skips_disabled(self, tmp_path, monkeypatch):
+        """Initial _setup_schedules loads enabled jobs and skips disabled ones."""
+        mock_log = tmp_path / "mock.log"
+        schedule = {
+            "heartbeat": {"enabled": True,  "cron": "*/30 * * * *", "prompt": "ping"},
+            "old-job":   {"enabled": True,  "cron": "0 9 * * *",    "prompt": "old"},
+            "disabled":  {"enabled": False, "cron": "0 0 * * *",    "prompt": "off"},
+        }
+        config = make_config(mock_log, schedule=schedule)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            inst = clawx_mod.ClawX()
+            inst._setup_schedules()
+            job_ids = {j.id for j in inst.scheduler.get_jobs()}
+            assert job_ids == {"heartbeat", "old-job"}, f"Got: {job_ids}"
+            inst.scheduler.shutdown(wait=False)
+        finally:
+            self._cleanup(work)
+
+    def test_reload_adds_removes_modifies(self, tmp_path, monkeypatch):
+        """Reload picks up added jobs, drops removed jobs, and updates cron changes."""
+        mock_log = tmp_path / "mock.log"
+        initial = {
+            "heartbeat": {"enabled": True, "cron": "*/30 * * * *", "prompt": "ping"},
+            "old-job":   {"enabled": True, "cron": "0 9 * * *",    "prompt": "old"},
+        }
+        config = make_config(mock_log, schedule=initial)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            inst = clawx_mod.ClawX()
+            inst._setup_schedules()
+
+            # Rewrite: heartbeat cron changes, old-job removed, new-job added
+            self._rewrite_schedule(work, mock_log, {
+                "heartbeat": {"enabled": True, "cron": "*/15 * * * *",  "prompt": "ping"},
+                "new-job":   {"enabled": True, "cron": "28 10 * * 1-6", "prompt": "morning"},
+            })
+            inst._reload_schedules()
+
+            jobs = {j.id: str(j.trigger) for j in inst.scheduler.get_jobs()}
+            assert set(jobs.keys()) == {"heartbeat", "new-job"}, f"Got: {set(jobs.keys())}"
+            assert "*/15" in jobs["heartbeat"], \
+                f"heartbeat cron didn't update: {jobs['heartbeat']}"
+            inst.scheduler.shutdown(wait=False)
+        finally:
+            self._cleanup(work)
+
+    def test_reload_empty_schedule_clears_jobs(self, tmp_path, monkeypatch):
+        """Reloading with an empty schedule removes all jobs."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log, schedule={
+            "job1": {"enabled": True, "cron": "0 0 * * *", "prompt": "x"},
+        })
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            inst = clawx_mod.ClawX()
+            inst._setup_schedules()
+            assert len(inst.scheduler.get_jobs()) == 1
+
+            self._rewrite_schedule(work, mock_log, {})
+            inst._reload_schedules()
+            assert len(inst.scheduler.get_jobs()) == 0
+            inst.scheduler.shutdown(wait=False)
+        finally:
+            self._cleanup(work)
+
+    def test_reload_broken_json_does_not_crash(self, tmp_path, monkeypatch):
+        """Reload with invalid JSON must not raise — scheduler stays alive."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log, schedule={
+            "job": {"enabled": True, "cron": "0 0 * * *", "prompt": "x"},
+        })
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            inst = clawx_mod.ClawX()
+            inst._setup_schedules()
+
+            # Corrupt the config file
+            (work / "config.json").write_text("{ this is not valid json")
+
+            # Must not raise
+            inst._reload_schedules()
+
+            # Scheduler instance still usable
+            assert inst.scheduler is not None
+            inst.scheduler.shutdown(wait=False)
+        finally:
+            self._cleanup(work)
+
+    def test_reload_before_setup_is_safe(self, tmp_path, monkeypatch):
+        """Calling _reload_schedules before _setup_schedules must not crash."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log, schedule={
+            "job": {"enabled": True, "cron": "0 0 * * *", "prompt": "x"},
+        })
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            inst = clawx_mod.ClawX()
+            # Deliberately skip _setup_schedules
+            inst._reload_schedules()  # should warn + no-op, not raise
+            assert inst.scheduler is None
+        finally:
+            self._cleanup(work)
+
+    def test_reload_production_like_multiple_jobs(self, tmp_path, monkeypatch):
+        """Reload handles a production-style schedule with multiple named jobs."""
+        mock_log = tmp_path / "mock.log"
+        prod = {
+            "heartbeat": {
+                "enabled": True,
+                "cron": "*/30 * * * *",
+                "prompt": "Read HEARTBEAT.md if it exists. Follow it strictly.",
+            },
+            "ema530-morning-report": {
+                "enabled": True,
+                "cron": "28 10 * * 1-6",
+                "prompt": "Run morning report.",
+            },
+        }
+        config = make_config(mock_log, schedule=prod)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            inst = clawx_mod.ClawX()
+            inst._setup_schedules()
+            expected = {"heartbeat", "ema530-morning-report"}
+            assert {j.id for j in inst.scheduler.get_jobs()} == expected
+
+            # Reloading the same config should leave the job set unchanged
+            inst._reload_schedules()
+            assert {j.id for j in inst.scheduler.get_jobs()} == expected
+            inst.scheduler.shutdown(wait=False)
+        finally:
+            self._cleanup(work)
+
+
+# ============================================================================
 # CONFIG / BUILD COMMAND TESTS
 # ============================================================================
 
