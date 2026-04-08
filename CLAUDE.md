@@ -102,6 +102,34 @@ Edit `config.json` → `schedule`:
 }
 ```
 
+### Hot-reload without restart (SIGHUP)
+
+You do **not** need to restart ClawX after editing `config.json`. Send `SIGHUP` to the ClawX process and it will:
+
+1. Re-read `config.json`
+2. Remove all current apscheduler jobs
+3. Re-add them from the new config
+
+```bash
+# find the ClawX PID
+cat mono.pid
+# or
+pgrep -f "python.*clawx.py"
+
+# reload
+kill -HUP <pid>
+```
+
+On success you'll see this in `logs/clawx-<date>.log`:
+```
+[SIGHUP] Reloading schedules from config.json...
+[SIGHUP] Reload OK (N active jobs)
+```
+
+If the new config has invalid JSON, the reload is aborted and the *previous* schedule keeps running — ClawX will not crash. Check the log for `[SIGHUP] Reload failed: ...`.
+
+**When to restart anyway:** if you change anything outside the `schedule` block (e.g. `claude.command`, `session.*`, `logging.*`, or the `extra_args` / `--channels` list), those are only read at startup and need a full restart.
+
 ### Cron format
 Standard 5-field: `minute hour day-of-month month day-of-week`
 - `*/30 * * * *` → every 30 minutes

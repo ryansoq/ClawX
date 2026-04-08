@@ -193,6 +193,14 @@ class ClawX:
     def _setup_schedules(self):
         """Set up cron-based schedules."""
         self.scheduler = BackgroundScheduler()
+        self._load_schedule_jobs()
+        self.scheduler.start()
+
+    def _load_schedule_jobs(self):
+        """Load (or reload) jobs from self.config into self.scheduler.
+
+        Caller is responsible for clearing existing jobs first if reloading.
+        """
         schedules = self.config.get("schedule", {})
 
         for name, sched in schedules.items():
@@ -219,7 +227,24 @@ class ClawX:
             )
             self.logger.info(f"Scheduled '{name}': {cron_expr}")
 
-        self.scheduler.start()
+    def _reload_schedules(self, *_):
+        """Reload schedules from config.json without restarting ClawX.
+
+        Triggered by SIGHUP. Re-reads config, removes all current jobs,
+        and re-adds them from the new config. Safe to call repeatedly.
+        """
+        self.logger.info("[SIGHUP] Reloading schedules from config.json...")
+        try:
+            self.config = load_config()
+            if self.scheduler is None:
+                self.logger.warning("[SIGHUP] Scheduler not initialized yet, skipping")
+                return
+            self.scheduler.remove_all_jobs()
+            self._load_schedule_jobs()
+            n = len(self.scheduler.get_jobs())
+            self.logger.info(f"[SIGHUP] Reload OK ({n} active jobs)")
+        except Exception as e:
+            self.logger.error(f"[SIGHUP] Reload failed: {e}")
 
     def _run_scheduled(self, name, prompt):
         """Execute a scheduled prompt by injecting into the PTY."""
@@ -358,6 +383,7 @@ class ClawX:
         signal.signal(signal.SIGINT, handle_stop)
         signal.signal(signal.SIGTERM, handle_stop)
         signal.signal(signal.SIGWINCH, handle_winch)
+        signal.signal(signal.SIGHUP, self._reload_schedules)
 
         # Start background threads
         fifo_thread = Thread(target=self._fifo_reader, daemon=True)
