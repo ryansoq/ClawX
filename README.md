@@ -155,26 +155,78 @@ Add `--channels plugin:telegram@claude-plugins-official` to `extra_args` (includ
 
 ## Setup Options
 
-### A. Use this repo directly
+### A. Fresh start — use this repo directly
 
-Clone, run `python clawx.py`, talk to your agent.
-
-### B. Copy soul files into an existing project
+Clone, run `python clawx.py`, talk to your agent. `BOOTSTRAP.md` will guide a first-run conversation to set up identity and personality.
 
 ```bash
-cp CLAUDE.md AGENTS.md SOUL.md USER.md IDENTITY.md BOOTSTRAP.md \
-   HEARTBEAT.md MEMORY.md TOOLS.md /path/to/project/
-mkdir -p /path/to/project/memory
-# Set config.json → "project_dir": "/path/to/project"
-```
-
-### C. Copy clawx.py into your project
-
-```bash
-cp clawx.py config.json /path/to/project/
-cd /path/to/project
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+pip install apscheduler  # optional, for scheduled tasks
 python clawx.py
 ```
+
+### B. Add ClawX to an existing project (has its own soul files)
+
+If you already have a project with `SOUL.md`, `IDENTITY.md`, `MEMORY.md`, etc. (e.g. an OpenClaw workspace), you just need the wrapper and config:
+
+```bash
+# Copy only the wrapper + config into your project
+cp clawx.py config.json /path/to/your-project/
+
+# Edit config.json — set project_dir to "." (or leave as default)
+# Adjust model, permission_mode, extra_args as needed
+
+# If your project doesn't have CLAUDE.md yet, copy it too
+cp CLAUDE.md /path/to/your-project/
+
+# Start
+cd /path/to/your-project
+python clawx.py
+```
+
+Your existing soul files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `memory/`, etc.) will be picked up automatically — no need to copy them again.
+
+**Important:** Do NOT copy `BOOTSTRAP.md` into a project that already has identity files — it's only for first-run setup and would overwrite your existing identity.
+
+### C. Bring an existing project into ClawX
+
+If you want to use the ClawX repo as your workspace and bring in your existing soul files:
+
+```bash
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+
+# Remove BOOTSTRAP.md — you already have an identity
+rm BOOTSTRAP.md
+
+# Copy your soul files over (overwrite the templates)
+cp /path/to/your-project/SOUL.md .
+cp /path/to/your-project/IDENTITY.md .
+cp /path/to/your-project/USER.md .
+cp /path/to/your-project/MEMORY.md .
+cp -r /path/to/your-project/memory/ ./memory/
+
+# Copy any other files you need (AGENTS.md, TOOLS.md, HEARTBEAT.md, etc.)
+# Then start
+python clawx.py
+```
+
+### D. Point ClawX at a remote project directory
+
+ClawX can live separately and point to your project via `config.json`:
+
+```bash
+# In config.json, set project_dir to your project's path
+{
+  "claude": {
+    "project_dir": "/home/user/my-project",
+    ...
+  }
+}
+```
+
+Claude will use `--add-dir` to load that directory. ClawX stays in its own folder, your project stays in its own folder.
 
 ## Philosophy
 

@@ -155,26 +155,78 @@ python clawx.py inject "執行晨報"
 
 ## 安裝方式
 
-### A. 直接用這個 repo
+### A. 全新開始 — 直接用這個 repo
 
-Clone 下來，跑 `python clawx.py`，跟你的 agent 聊天。
-
-### B. 把靈魂文件複製到現有專案
+Clone 下來，跑 `python clawx.py`。`BOOTSTRAP.md` 會引導首次對話，設定 agent 的身份和個性。
 
 ```bash
-cp CLAUDE.md AGENTS.md SOUL.md USER.md IDENTITY.md BOOTSTRAP.md \
-   HEARTBEAT.md MEMORY.md TOOLS.md /path/to/project/
-mkdir -p /path/to/project/memory
-# config.json → "project_dir": "/path/to/project"
-```
-
-### C. 把 clawx.py 複製到你的專案
-
-```bash
-cp clawx.py config.json /path/to/project/
-cd /path/to/project
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+pip install apscheduler  # 選裝，排程功能需要
 python clawx.py
 ```
+
+### B. 把 ClawX 加到現有專案（已有靈魂文件）
+
+如果你的專案已經有 `SOUL.md`、`IDENTITY.md`、`MEMORY.md` 等（例如 OpenClaw workspace），只需要複製外殼和設定：
+
+```bash
+# 只複製外殼 + 設定到你的專案
+cp clawx.py config.json /path/to/your-project/
+
+# 編輯 config.json — project_dir 設為 "."（或保持預設）
+# 依需求調整 model、permission_mode、extra_args
+
+# 如果專案還沒有 CLAUDE.md，也一起複製
+cp CLAUDE.md /path/to/your-project/
+
+# 啟動
+cd /path/to/your-project
+python clawx.py
+```
+
+現有的靈魂文件（`SOUL.md`、`IDENTITY.md`、`USER.md`、`MEMORY.md`、`memory/` 等）會自動載入，不需要重複複製。
+
+**注意：** 不要把 `BOOTSTRAP.md` 複製到已有身份文件的專案 — 它只用於首次設定，會覆蓋現有身份。
+
+### C. 把現有專案搬進 ClawX
+
+如果想用 ClawX repo 作為工作目錄，把現有的靈魂文件搬進來：
+
+```bash
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+
+# 刪除 BOOTSTRAP.md — 你已經有身份了
+rm BOOTSTRAP.md
+
+# 把你的靈魂文件複製過來（覆蓋範本）
+cp /path/to/your-project/SOUL.md .
+cp /path/to/your-project/IDENTITY.md .
+cp /path/to/your-project/USER.md .
+cp /path/to/your-project/MEMORY.md .
+cp -r /path/to/your-project/memory/ ./memory/
+
+# 其他需要的文件也一起複製（AGENTS.md、TOOLS.md、HEARTBEAT.md 等）
+# 然後啟動
+python clawx.py
+```
+
+### D. 讓 ClawX 指向遠端專案目錄
+
+ClawX 可以獨立存在，透過 `config.json` 指向你的專案：
+
+```bash
+# 在 config.json 中設定 project_dir 為你的專案路徑
+{
+  "claude": {
+    "project_dir": "/home/user/my-project",
+    ...
+  }
+}
+```
+
+Claude 會用 `--add-dir` 載入該目錄。ClawX 在自己的資料夾，專案在自己的資料夾，互不干擾。
 
 ## 設計理念
 
