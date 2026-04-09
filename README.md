@@ -6,6 +6,40 @@ ClawX is a thin PTY wrapper + soul framework for [Claude Code CLI](https://docs.
 
 ![ClawX Demo](demo.png)
 
+## Quick Start
+
+### With [uv](https://docs.astral.sh/uv/) (recommended — zero setup)
+
+```bash
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+
+# uv reads PEP 723 metadata in clawx.py and auto-installs deps
+uv run clawx.py
+```
+
+uv creates an isolated venv, installs `apscheduler`, and runs ClawX — all in one command. No `pip install`, no virtualenv juggling. First run takes a few seconds; subsequent runs are cached and start in <200ms.
+
+Don't have uv yet? Install it once:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### With plain Python
+
+```bash
+git clone https://github.com/ryansoq/ClawX.git
+cd ClawX
+
+# Optional: for scheduled tasks
+pip install apscheduler
+
+# Start — looks exactly like `claude` but with superpowers
+python clawx.py
+```
+
+On first run, the agent will introduce itself and ask who you are. Just talk naturally.
+
 ## How It Works
 
 ```
@@ -76,40 +110,6 @@ ClawX/
 ├── MEMORY.md             # Long-term memory index
 └── memory/               # Daily memory logs
 ```
-
-## Quick Start
-
-### With [uv](https://docs.astral.sh/uv/) (recommended — zero setup)
-
-```bash
-git clone https://github.com/ryansoq/ClawX.git
-cd ClawX
-
-# uv reads PEP 723 metadata in clawx.py and auto-installs deps
-uv run clawx.py
-```
-
-uv creates an isolated venv, installs `apscheduler`, and runs ClawX — all in one command. No `pip install`, no virtualenv juggling. First run takes a few seconds; subsequent runs are cached and start in <200ms.
-
-Don't have uv yet? Install it once:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### With plain Python
-
-```bash
-git clone https://github.com/ryansoq/ClawX.git
-cd ClawX
-
-# Optional: for scheduled tasks
-pip install apscheduler
-
-# Start — looks exactly like `claude` but with superpowers
-python clawx.py
-```
-
-On first run, the agent will introduce itself and ask who you are. Just talk naturally.
 
 ### CLI Commands
 
