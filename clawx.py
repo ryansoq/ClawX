@@ -102,6 +102,57 @@ def detect_startup_modal(buf: bytes):
     return max(numbers)
 
 
+def detect_compact_event(buf: bytes):
+    """Detect a compact notification in PTY output.
+
+    When Claude Code auto-compacts context it prints:
+        ✻ Conversation compacted (ctrl+o for history)
+
+    ANSI cursor-move sequences (e.g. \\x1b[1C) replace spaces in PTY
+    output, so after stripping we match the words individually rather
+    than as a contiguous phrase.
+
+    Returns True if detected, None otherwise.
+    """
+    if not buf:
+        return None
+    # Replace ANSI sequences with a space so cursor-moves don't merge words.
+    text = _ANSI_RE.sub(b" ", buf).decode("utf-8", errors="replace").lower()
+    if "conversation" in text and "compacted" in text:
+        return True
+    return None
+
+
+def detect_rate_limit_modal(buf: bytes):
+    """Detect a rate-limit modal in PTY output.
+
+    When Claude Code hits the usage cap it shows a blocking prompt:
+        "You've hit your limit · resets 12am (Asia/Taipei)"
+        /rate-limit-options
+        1. Stop and wait for limit to reset
+        2. Upgrade your plan
+
+    Returns 1 (wait for reset) if detected, None otherwise.
+    """
+    if not buf:
+        return None
+    text = _ANSI_RE.sub(b"", buf).decode("utf-8", errors="replace").lower()
+    if not any(kw in text for kw in (
+        "rate-limit-options",
+        "hit your limit",
+        "you've hit your limit",
+        "wait for limit to reset",
+    )):
+        return None
+    numbers = set()
+    for match in re.finditer(r"(?:^|\s|\[)([1-9])[.)\]]", text, re.MULTILINE):
+        numbers.add(int(match.group(1)))
+    if len(numbers) < 2:
+        return None
+    # Pick option 1 = "Stop and wait for limit to reset"
+    return 1
+
+
 def load_config():
     with open(CONFIG_PATH, encoding="utf-8") as f:
         return json.load(f)
@@ -136,123 +187,9 @@ def set_winsize(fd):
         fcntl.ioctl(fd, termios.TIOCSWINSZ, sz)
 
 
-class CompactWatcher:
-    """Tails Claude Code session JSONL files and fires a callback whenever
-    a ``compact_boundary`` event appears.
-
-    Claude Code writes each conversation to
-    ``~/.claude/projects/<slug>/<session_uuid>.jsonl``. When the CLI
-    auto-compacts the context (at ~90% of the model window) it appends a
-    single line with ``type=system`` and ``subtype=compact_boundary``. That
-    line is our signal that the in-process agent has just been summarized
-    — identity and recent context may have changed, so we want to (a)
-    inject an AGENTS.md re-read prompt and (b) notify the user.
-
-    Design notes:
-      - First sight of any file establishes a baseline (end-of-file). We
-        deliberately ignore historical content so ClawX restarts don't
-        replay old compacts.
-      - We dedup by the event ``uuid`` in case a file rewind re-reads the
-        same bytes.
-      - Scan is a simple poll loop. Reliable across FS types and cheap —
-        session files are tiny.
-      - Handler exceptions are caught and logged so a broken callback
-        can't kill the background thread.
-    """
-
-    def __init__(self, sessions_dir, logger, on_compact):
-        self.sessions_dir = Path(sessions_dir)
-        self.logger = logger
-        self.on_compact = on_compact
-        self.file_positions = {}  # Path -> last-read byte offset
-        self.seen_event_uuids = set()
-        self.stop_event = Event()
-
-    @staticmethod
-    def resolve_sessions_dir_from_project(project_dir):
-        """Claude Code slugifies project paths by replacing '/' with '-'
-        and prefixing with '-' (so /home/ymchang/clawd becomes
-        -home-ymchang-clawd). Return the corresponding sessions directory.
-        """
-        abs_path = str(Path(project_dir).resolve())
-        # Strip leading '/' then replace remaining '/' with '-', prefix with '-'
-        slug = "-" + abs_path.lstrip("/").replace("/", "-")
-        return Path.home() / ".claude" / "projects" / slug
-
-    def _scan_once(self):
-        """Single pass: append-only read of every *.jsonl in sessions_dir."""
-        if not self.sessions_dir.exists():
-            return
-        try:
-            files = sorted(self.sessions_dir.glob("*.jsonl"))
-        except OSError as e:
-            self.logger.warning(f"[CompactWatcher] glob failed: {e}")
-            return
-        for jsonl in files:
-            try:
-                size = jsonl.stat().st_size
-            except OSError:
-                continue
-            pos = self.file_positions.get(jsonl)
-            if pos is None:
-                # First time seeing this file — baseline at EOF so we
-                # don't replay historical content.
-                self.file_positions[jsonl] = size
-                continue
-            if size < pos:
-                # File truncated — reset to start
-                pos = 0
-            if size == pos:
-                continue
-            try:
-                with open(jsonl, "rb") as f:
-                    f.seek(pos)
-                    chunk = f.read(size - pos)
-            except OSError as e:
-                self.logger.warning(f"[CompactWatcher] read failed {jsonl.name}: {e}")
-                continue
-            self.file_positions[jsonl] = size
-            self._process_chunk(chunk)
-
-    def _process_chunk(self, chunk):
-        for raw_line in chunk.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                evt = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            if not isinstance(evt, dict):
-                continue
-            if evt.get("type") != "system" or evt.get("subtype") != "compact_boundary":
-                continue
-            uuid = evt.get("uuid")
-            if uuid and uuid in self.seen_event_uuids:
-                continue
-            if uuid:
-                self.seen_event_uuids.add(uuid)
-            try:
-                self.on_compact(evt)
-            except Exception as e:
-                self.logger.error(
-                    f"[CompactWatcher] handler raised for uuid={uuid}: {e}"
-                )
-
-    def run(self, interval=2.0):
-        """Background loop — call from a daemon Thread."""
-        self.logger.info(f"[CompactWatcher] watching {self.sessions_dir}")
-        while not self.stop_event.is_set():
-            try:
-                self._scan_once()
-            except Exception as e:
-                self.logger.error(f"[CompactWatcher] scan error: {e}")
-            # stop_event.wait returns True if set — exit promptly on shutdown
-            if self.stop_event.wait(interval):
-                break
-
-    def stop(self):
-        self.stop_event.set()
+    # CompactWatcher (JSONL polling) removed in favour of PTY-based
+    # compact detection via detect_compact_event() + master_fd stream.
+    # See _maybe_handle_compact() in ClawX class.
 
 
 class ClawX:
@@ -268,7 +205,6 @@ class ClawX:
         self.started_at = None
         self.scheduler = None
         self.restart_count = 0
-        self.compact_watcher = None
         self.restart_requested = False
         # Scheduler liveness tracking — used by watchdog to detect silent
         # apscheduler death (jobs registered but never fire).
@@ -277,6 +213,12 @@ class ClawX:
         self._startup_buffer = bytearray()
         self._startup_modal_active = False
         self._startup_modal_handled = False
+        # Rate-limit modal detection — runs continuously, not just at startup.
+        self._ratelimit_buffer = bytearray()
+        self._ratelimit_handled = False
+        # Compact detection via PTY stream (replaced JSONL-based CompactWatcher).
+        self._compact_buffer = bytearray()
+        self._compact_cooldown_until = 0  # epoch; suppress rapid re-fires
 
     def build_command(self):
         """Build the claude CLI command."""
@@ -588,41 +530,52 @@ class ClawX:
                     f"Change: \"command\": \"bun\"  →  \"command\": \"{bun}\""
                 )
 
-    def _on_compact(self, event):
-        """Handle a detected compact_boundary event.
+    def _maybe_handle_compact(self, chunk):
+        """Detect compact event in PTY output (runs continuously).
 
-        Order matters: inject the AGENTS.md re-read FIRST so Claude's
-        next turn restores its identity (the compacted summary may have
-        dropped the 'who am I' part of the prompt). The user-facing TG
-        notification is a separate, user-friendly side-channel and does
-        not mention internal re-read mechanics.
+        When Claude auto-compacts, the terminal shows:
+            ✻ Conversation compacted (ctrl+o for history)
+
+        On detection: (1) inject AGENTS.md identity reload, (2) notify
+        user via Telegram. A 60-second cooldown prevents rapid re-fires
+        when the same message scrolls through the buffer multiple times.
         """
-        meta = (event.get("compactMetadata") or {})
-        pre_tokens = meta.get("preTokens")
-        trigger = meta.get("trigger", "?")
-        uuid = event.get("uuid", "?")
-        session_id = (event.get("sessionId") or "")[:8]
-        self.logger.info(
-            f"[Compact] detected session={session_id} trigger={trigger} "
-            f"preTokens={pre_tokens} uuid={uuid}"
-        )
+        import time
+        now = time.time()
+        if now < self._compact_cooldown_until:
+            return
+        self._compact_buffer.extend(chunk)
+        if len(self._compact_buffer) > 8192:
+            del self._compact_buffer[:-8192]
+        if detect_compact_event(bytes(self._compact_buffer)) is None:
+            return
+        # Detected!
+        self._compact_buffer = bytearray()
+        self._compact_cooldown_until = now + 60  # 60s cooldown
+        self.logger.info("[Compact] detected via PTY stream")
 
-        # (1) Internal: restore identity
-        self.inject(
-            "BLOCKING REQUIREMENT: Read AGENTS.md and follow its "
-            "'Every Session' instructions completely. This is a "
-            "post-compact identity reload — do it before anything else."
-        )
+        # (1) Internal: restore identity after a short delay
+        def _deferred_identity_reload():
+            import time
+            time.sleep(3)
+            self.inject(
+                "BLOCKING REQUIREMENT: Read AGENTS.md and follow its "
+                "'Every Session' instructions completely. This is a "
+                "post-compact identity reload — do it before anything else."
+            )
+            self.logger.info("[Compact] Injected post-compact AGENTS.md reload")
 
-        # (2) Public: friendly notification to the user
-        self._notify_compact(event)
+        Thread(target=_deferred_identity_reload, daemon=True).start()
 
-    def _notify_compact(self, event):
+        # (2) Public: notify user via Telegram
+        self._notify_compact()
+
+    def _notify_compact(self):
         """Send a user-friendly Telegram message about the auto-compact.
 
         Reads bot token from ~/.claude/channels/telegram/.env and chat_id
         from config.json -> compact_notify.telegram.chat_id. Fails soft —
-        notification is best-effort and must never crash the watcher.
+        notification is best-effort and must never crash.
         """
         cfg = (self.config.get("compact_notify") or {})
         tg_cfg = (cfg.get("telegram") or {})
@@ -646,16 +599,7 @@ class ClawX:
         if not token:
             return
 
-        meta = (event.get("compactMetadata") or {})
-        pre_tokens = meta.get("preTokens")
-        if isinstance(pre_tokens, (int, float)):
-            pct = pre_tokens / 200_000 * 100
-            body = (
-                f"🧠 context 快滿了（{int(pre_tokens/1000)}k / 200k tokens, "
-                f"{pct:.0f}%）正在自動壓縮記憶…"
-            )
-        else:
-            body = "🧠 context 自動壓縮中…"
+        body = "🧠 Context 自動壓縮了，正在重新載入身份…"
 
         try:
             import urllib.parse
@@ -752,6 +696,12 @@ class ClawX:
             self._startup_buffer = bytearray()
             self._startup_modal_active = True
             self._startup_modal_handled = False
+            # Reset rate-limit detection on respawn.
+            self._ratelimit_buffer = bytearray()
+            self._ratelimit_handled = False
+            # Reset compact detection on respawn.
+            self._compact_buffer = bytearray()
+            self._compact_cooldown_until = 0
 
             # Set terminal size
             set_winsize(master_fd)
@@ -815,6 +765,82 @@ class ClawX:
 
         Thread(target=_deferred_identity_reload, daemon=True).start()
 
+    def _maybe_handle_rate_limit(self, chunk):
+        """Detect rate-limit modal in PTY output (runs continuously).
+
+        Unlike startup modal detection which only runs during the first
+        60 seconds, rate limits can appear at any time. We keep a small
+        rolling buffer of recent PTY output and check for the rate-limit
+        prompt pattern.
+        """
+        if self._ratelimit_handled:
+            return
+        self._ratelimit_buffer.extend(chunk)
+        # Keep only the last 8KB — the prompt is small.
+        if len(self._ratelimit_buffer) > 8192:
+            del self._ratelimit_buffer[:-8192]
+        choice = detect_rate_limit_modal(bytes(self._ratelimit_buffer))
+        if choice is None:
+            return
+        # Auto-select option 1: "Stop and wait for limit to reset"
+        try:
+            with self.write_lock:
+                os.write(self.master_fd, f"{choice}\r".encode())
+        except OSError as e:
+            self.logger.error(f"[RateLimit] write failed: {e}")
+            return
+        self._ratelimit_handled = True
+        self._ratelimit_buffer = bytearray()
+        self.logger.warning(
+            "[RateLimit] Detected rate-limit modal — auto-selected 'Stop and wait'"
+        )
+        # Notify user via Telegram
+        self._notify_rate_limit()
+
+    def _notify_rate_limit(self):
+        """Send Telegram notification when rate limit is hit."""
+        cfg = (self.config.get("compact_notify") or {})
+        tg_cfg = (cfg.get("telegram") or {})
+        chat_id = tg_cfg.get("chat_id")
+        if not chat_id:
+            return
+
+        token_file = Path(tg_cfg.get(
+            "token_env_file",
+            str(Path.home() / ".claude" / "channels" / "telegram" / ".env"),
+        )).expanduser()
+        token = None
+        try:
+            for line in token_file.read_text().splitlines():
+                if line.startswith("TELEGRAM_BOT_TOKEN="):
+                    token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except OSError as e:
+            self.logger.warning(f"[RateLimit] could not read TG token: {e}")
+            return
+        if not token:
+            return
+
+        body = (
+            "⚠️ Token 用完了！Claude Code 撞到 rate limit。\n"
+            "已自動選擇「等待 reset」。\n"
+            f"預計 12:00 AM (Asia/Taipei) 重置。"
+        )
+
+        try:
+            import urllib.parse
+            import urllib.request
+            payload = urllib.parse.urlencode({
+                "chat_id": str(chat_id),
+                "text": body,
+            }).encode("utf-8")
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            req = urllib.request.Request(url, data=payload, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+        except Exception as e:
+            self.logger.warning(f"[RateLimit] TG notify failed: {e}")
+
     def run(self):
         """Main loop: PTY passthrough with FIFO injection."""
         # Setup
@@ -877,7 +903,8 @@ class ClawX:
         signal.signal(signal.SIGTERM, handle_stop)
         signal.signal(signal.SIGWINCH, handle_winch)
         signal.signal(signal.SIGHUP, self._reload_schedules)
-        signal.signal(signal.SIGUSR1, handle_restart)
+        # SIGUSR1 restart temporarily disabled — needs more testing.
+        # signal.signal(signal.SIGUSR1, handle_restart)
 
         # Start background threads
         fifo_thread = Thread(target=self._fifo_reader, daemon=True)
@@ -886,20 +913,9 @@ class ClawX:
         health_thread = Thread(target=self._health_loop, daemon=True)
         health_thread.start()
 
-        # Compact watcher: re-read AGENTS.md + notify on auto-compact.
-        # Enabled by default; set compact_notify.enabled=false to disable.
-        compact_cfg = self.config.get("compact_notify") or {}
-        if compact_cfg.get("enabled", True):
-            sessions_dir = CompactWatcher.resolve_sessions_dir_from_project(
-                self._get_project_dir()
-            )
-            self.compact_watcher = CompactWatcher(
-                sessions_dir=sessions_dir,
-                logger=self.logger,
-                on_compact=self._on_compact,
-            )
-            compact_thread = Thread(target=self.compact_watcher.run, daemon=True)
-            compact_thread.start()
+        # Compact + rate-limit detection now runs inline in the main
+        # PTY read loop via _maybe_handle_compact / _maybe_handle_rate_limit.
+        # No background thread needed.
 
         # Set terminal to raw mode for passthrough
         if sys.stdin.isatty():
@@ -944,9 +960,10 @@ class ClawX:
                             os.write(stdout_fd, data)
                             transcript_f.write(data)
                             transcript_f.flush()
-                            # Watch for blocking startup modal (auto-compact
-                            # prompt under --continue) and auto-skip it.
+                            # PTY stream watchers — all detection runs here.
                             self._maybe_handle_startup_modal(data)
+                            self._maybe_handle_compact(data)
+                            self._maybe_handle_rate_limit(data)
                         except OSError:
                             self.stop_event.set()
                             break

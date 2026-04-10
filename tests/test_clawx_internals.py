@@ -187,62 +187,14 @@ def test_notify_compact_noop_without_chat_id(stub_clawx):
     """
     stub_clawx.config["compact_notify"] = {}
     # Must not raise, must not log errors.
-    stub_clawx._notify_compact({"compactMetadata": {"preTokens": 180000}})
+    stub_clawx._notify_compact()
     stub_clawx.logger.error.assert_not_called()
 
 
 def test_notify_compact_noop_with_empty_telegram_config(stub_clawx):
     stub_clawx.config["compact_notify"] = {"telegram": {}}
-    stub_clawx._notify_compact({"compactMetadata": {"preTokens": 180000}})
+    stub_clawx._notify_compact()
     stub_clawx.logger.error.assert_not_called()
-
-
-def test_compact_watcher_resets_on_file_truncation():
-    """If a session file is truncated (size < last position), the watcher
-    must reset to offset 0 and re-read from the start."""
-    import json
-    import logging
-    events = []
-    logger = logging.getLogger("test_truncation")
-    logger.addHandler(logging.NullHandler())
-
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        sessions = Path(td) / "sessions"
-        sessions.mkdir()
-        jsonl = sessions / "sess.jsonl"
-
-        watcher = clawx.CompactWatcher(
-            sessions_dir=str(sessions),
-            logger=logger,
-            on_compact=lambda e: events.append(e),
-        )
-
-        # Write initial content and baseline
-        jsonl.write_text(json.dumps({"type": "user", "uuid": "u1"}) + "\n")
-        watcher._scan_once()
-        assert events == []
-
-        # Append a compact event
-        with open(jsonl, "a") as f:
-            f.write(json.dumps({
-                "type": "system", "subtype": "compact_boundary",
-                "uuid": "evt-1", "compactMetadata": {"trigger": "auto"},
-            }) + "\n")
-        watcher._scan_once()
-        assert len(events) == 1
-
-        # Truncate the file (simulates log rotation or corruption)
-        jsonl.write_text("")
-        # Write a NEW compact event with different uuid
-        with open(jsonl, "a") as f:
-            f.write(json.dumps({
-                "type": "system", "subtype": "compact_boundary",
-                "uuid": "evt-2", "compactMetadata": {"trigger": "auto"},
-            }) + "\n")
-        watcher._scan_once()
-        assert len(events) == 2
-        assert events[1]["uuid"] == "evt-2"
 
 
 class _FakeOS:
