@@ -607,8 +607,9 @@ class ClawX:
 
         # (1) Internal: restore identity
         self.inject(
-            "Read AGENTS.md if it exists and follow its "
-            "'Every Session' instructions completely."
+            "BLOCKING REQUIREMENT: Read AGENTS.md and follow its "
+            "'Every Session' instructions completely. This is a "
+            "post-compact identity reload — do it before anything else."
         )
 
         # (2) Public: friendly notification to the user
@@ -796,6 +797,21 @@ class ClawX:
         self.logger.warning(
             f"[ModalAutoSkip] Detected startup modal — auto-selected option {choice}"
         )
+
+        # After skipping the compact/resume modal, inject AGENTS.md reload
+        # so Claude restores its identity in the new session.
+        # Short delay lets Claude finish processing the modal selection.
+        def _deferred_identity_reload():
+            import time
+            time.sleep(3)
+            self.inject(
+                "BLOCKING REQUIREMENT: Read AGENTS.md and follow its "
+                "'Every Session' instructions completely. This is a "
+                "post-compact identity reload — do it before anything else."
+            )
+            self.logger.info("[ModalAutoSkip] Injected post-compact AGENTS.md reload")
+
+        Thread(target=_deferred_identity_reload, daemon=True).start()
 
     def run(self):
         """Main loop: PTY passthrough with FIFO injection."""
