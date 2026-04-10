@@ -657,6 +657,56 @@ class TestBuildCommand:
 
 
 # ============================================================================
+# RUN_ONESHOT COMMAND RESOLUTION
+# ============================================================================
+
+class TestRunOneshot:
+    """run_oneshot must resolve the command path the same way build_command does."""
+
+    def _import_clawx(self, work, monkeypatch):
+        monkeypatch.chdir(work)
+        sys.path.insert(0, str(work))
+        if "clawx" in sys.modules:
+            del sys.modules["clawx"]
+        import clawx as clawx_mod
+        return clawx_mod
+
+    def _cleanup(self, work):
+        if str(work) in sys.path:
+            sys.path.remove(str(work))
+        if "clawx" in sys.modules:
+            del sys.modules["clawx"]
+
+    def test_oneshot_missing_command_raises(self, tmp_path, monkeypatch):
+        """run_oneshot with a bogus command should raise FileNotFoundError."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log)
+        config["claude"]["command"] = "nonexistent_xyz_99999"
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            with pytest.raises(FileNotFoundError, match="not found"):
+                clawx_mod.run_oneshot("hello")
+        finally:
+            self._cleanup(work)
+
+    def test_oneshot_resolves_absolute_path(self, tmp_path, monkeypatch):
+        """run_oneshot with an absolute mock path should resolve it."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log)
+        # MOCK_CLAUDE is already absolute — run_oneshot should find it
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            # We can't actually run it (mock_claude.sh blocks on stdin),
+            # but _resolve_command should find it.
+            resolved = clawx_mod._resolve_command(str(MOCK_CLAUDE))
+            assert resolved is not None
+        finally:
+            self._cleanup(work)
+
+
+# ============================================================================
 # TRANSCRIPT TEST
 # ============================================================================
 

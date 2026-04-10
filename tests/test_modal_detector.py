@@ -80,6 +80,16 @@ def test_case_insensitive_keyword():
     assert detect_startup_modal(buf) == 2
 
 
+def test_handles_bracket_style_options():
+    buf = (
+        b"Auto-compact prompt:\n"
+        b"  [1] compact\n"
+        b"  [2] summarize\n"
+        b"  [3] skip\n"
+    )
+    assert detect_startup_modal(buf) == 3
+
+
 def test_handles_invalid_utf8_gracefully():
     # PTY can emit partial UTF-8 mid-buffer; should not crash.
     buf = b"\xff\xfe summarize?\n  1. a\n  2. b\n"

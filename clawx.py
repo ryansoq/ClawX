@@ -278,18 +278,8 @@ class ClawX:
     def build_command(self):
         """Build the claude CLI command."""
         cfg = self.config["claude"]
-        # Resolve command to full path so child process can find it
         raw_cmd = cfg["command"]
-        resolved = shutil.which(raw_cmd)
-        if resolved is None:
-            # Check common install locations
-            for candidate in [
-                Path.home() / ".local" / "bin" / raw_cmd,
-                Path("/usr/local/bin") / raw_cmd,
-            ]:
-                if candidate.exists() and os.access(candidate, os.X_OK):
-                    resolved = str(candidate)
-                    break
+        resolved = _resolve_command(raw_cmd)
         if resolved is None:
             raise FileNotFoundError(f"Command '{raw_cmd}' not found in PATH or common locations")
         cmd = [resolved]
@@ -966,12 +956,29 @@ class ClawX:
             print("\n[ClawX] Session ended.")
 
 
+def _resolve_command(raw_cmd):
+    """Resolve a command name to a full path, searching PATH and common locations."""
+    resolved = shutil.which(raw_cmd)
+    if resolved:
+        return resolved
+    for candidate in [
+        Path.home() / ".local" / "bin" / raw_cmd,
+        Path("/usr/local/bin") / raw_cmd,
+    ]:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def run_oneshot(prompt):
     """Run a one-shot prompt via claude -p."""
     config = load_config()
     cfg = config["claude"]
     project_dir = str((BASE_DIR / cfg["project_dir"]).resolve()) if not Path(cfg["project_dir"]).is_absolute() else cfg["project_dir"]
-    cmd = [cfg["command"], "-p", prompt, "--add-dir", project_dir]
+    resolved = _resolve_command(cfg["command"])
+    if resolved is None:
+        raise FileNotFoundError(f"Command '{cfg['command']}' not found in PATH or common locations")
+    cmd = [resolved, "-p", prompt, "--add-dir", project_dir]
     if cfg.get("model"):
         cmd.extend(["--model", cfg["model"]])
 
