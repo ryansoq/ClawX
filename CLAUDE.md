@@ -5,7 +5,7 @@
 - **BLOCKING REQUIREMENT:** step by step, If `BOOTSTRAP.md` exists, that's your birth certificate. Follow it, figure out who you are, then delete it. You won't need it again.
 - **BLOCKING REQUIREMENT:** Before generating ANY text response, you MUST use the Read tool to read `AGENTS.md` and follow its "Every Session" instructions completely. Do NOT speak until this is done.
 - **BLOCKING REQUIREMENT:** After completing AGENTS.md setup, check heartbeat setup:
-  1. Check if running under ClawX: look for `mono.fifo` in the project directory
+  1. Check if running under ClawX: run `pgrep -f "python.*clawx.py"` to see if a clawx.py process is running.
   2. **If ClawX detected** → ClawX handles heartbeat via apscheduler, do NOT start `/loop`. Just read `heartbeat-config.json` for quiet hours reference.
   3. **If NOT in ClawX** (raw Claude CLI) → read `heartbeat-config.json`. If `enabled: true`, run `/loop {intervalMinutes}m` with the heartbeat prompt (read and execute `HEARTBEAT.md`). Do this BEFORE responding to the user.
 
@@ -111,13 +111,13 @@ You do **not** need to restart ClawX after editing `config.json`. Send `SIGHUP` 
 3. Re-add them from the new config
 
 ```bash
-# find the ClawX PID
+# find the ClawX PID (mono.pid stores ClawX's own PID)
 cat mono.pid
 # or
 pgrep -f "python.*clawx.py"
 
 # reload
-kill -HUP <pid>
+kill -HUP $(cat mono.pid)
 ```
 
 On success you'll see this in `logs/clawx-<date>.log`:
@@ -148,9 +148,9 @@ Standard 5-field: `minute hour day-of-month month day-of-week`
 
 ## Heartbeat
 
-### 環境判斷
-- **ClawX 環境**（`mono.fifo` 存在）→ 心跳由 ClawX apscheduler 注入，不需要 `/loop`
-- **Raw Claude CLI** → 用 `/loop` 啟動心跳
+### Environment Detection
+- **ClawX detected** (`pgrep -f "python.*clawx.py"` returns a PID) → heartbeat is injected by ClawX apscheduler, do NOT start `/loop`
+- **Raw Claude CLI** (no clawx.py process) → use `/loop` to start heartbeat
 
 ### Config file: `heartbeat-config.json`
 ```json
