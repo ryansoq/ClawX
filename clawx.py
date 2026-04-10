@@ -18,6 +18,7 @@ Usage:
     python clawx.py                  # Start interactive session (PTY passthrough)
     python clawx.py inject "msg"     # Inject a message into running session via FIFO
     python clawx.py stop             # Gracefully stop session
+    python clawx.py restart [delay]  # Self-restart: stop then relaunch (default 5s delay)
     python clawx.py prompt "text"    # One-shot: run prompt via -p mode, print result
 """
 
@@ -990,6 +991,83 @@ def run_oneshot(prompt):
     return result.stdout
 
 
+def self_restart(delay=5):
+    """Restart ClawX by spawning a detached relaunch process, then killing
+    the current instance.
+
+    The relaunch process is fully detached (setsid + double-fork) so it
+    survives the death of the current PTY session. Sequence:
+
+      1. Spawn a shell script via setsid that:
+         a. Sleeps ``delay`` seconds (let old process clean up)
+         b. Runs ``uv run clawx.py`` in BASE_DIR
+      2. Send SIGTERM to the current ClawX process (from PID file)
+      3. Old ClawX dies → old Claude session disconnects
+      4. After delay, new ClawX starts → ``--continue`` resumes session
+
+    Returns True if the restart was initiated, False on error.
+    """
+    if not PID_FILE.exists():
+        print("Error: No PID file — is ClawX running?")
+        return False
+
+    pid = int(PID_FILE.read_text().strip())
+
+    # Find the launcher command. Prefer uv if available, fall back to python.
+    import subprocess as _sp
+    uv_path = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
+    if not Path(uv_path).exists():
+        # Fall back to direct python
+        launcher = f"{sys.executable} clawx.py"
+    else:
+        launcher = f"{uv_path} run clawx.py"
+
+    # Build a self-contained restart script. The script:
+    #   - Runs in its own session (setsid) so it survives parent death
+    #   - Redirects to a log file so we can debug if something goes wrong
+    #   - Waits for the old process to die before starting new one
+    restart_log = LOG_DIR / "restart.log"
+    script = (
+        f"#!/bin/bash\n"
+        f"echo \"[$(date)] Restart initiated, waiting {delay}s...\" >> {restart_log}\n"
+        f"sleep {delay}\n"
+        f"# Wait for old process to fully exit\n"
+        f"for i in $(seq 1 10); do\n"
+        f"  kill -0 {pid} 2>/dev/null || break\n"
+        f"  sleep 1\n"
+        f"done\n"
+        f"echo \"[$(date)] Old process gone, starting new ClawX\" >> {restart_log}\n"
+        f"cd {BASE_DIR}\n"
+        f"exec {launcher}\n"
+    )
+
+    # Write the script to a temp file and launch it detached
+    script_path = BASE_DIR / ".restart.sh"
+    script_path.write_text(script)
+    script_path.chmod(0o755)
+
+    # setsid launches in a new session, detached from our PTY.
+    # stdin from /dev/null, stdout/stderr to restart log.
+    with open(restart_log, "a") as log_f:
+        _sp.Popen(
+            ["setsid", str(script_path)],
+            stdin=_sp.DEVNULL,
+            stdout=log_f,
+            stderr=log_f,
+            start_new_session=True,
+        )
+
+    print(f"[ClawX] Restart scheduled in {delay}s. Stopping current instance...")
+
+    # Now kill ourselves
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    return True
+
+
 def main():
     if len(sys.argv) < 2:
         # Default: run PTY passthrough
@@ -1026,6 +1104,10 @@ def main():
                 PID_FILE.unlink()
         else:
             print("No PID file found")
+
+    elif command == "restart":
+        delay = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        self_restart(delay=delay)
 
     else:
         print(__doc__)
