@@ -410,23 +410,33 @@ class ClawX:
             # if the scheduler thread is briefly slow. APScheduler's default
             # is 1 second, which is too tight under any GIL contention and
             # was the root cause of the 2026-04-09 silent-scheduler bug.
+            # 1200s = 20 minutes of slack — comfortably more than any GIL
+            # stall we've ever observed, and still under the 30-min heartbeat
+            # cadence so we never run a heartbeat that's a full cycle late.
             self.scheduler.add_job(
                 self._run_scheduled,
                 trigger,
                 args=[name, prompt],
                 id=name,
                 name=name,
-                misfire_grace_time=600,
+                misfire_grace_time=1200,
                 coalesce=True,
             )
             self.logger.info(f"Scheduled '{name}': {cron_expr}")
 
+    # Watchdog idle threshold: 90 minutes covers (a) one full 30-min cycle
+    # being missed plus (b) the 20-min misfire grace plus (c) generous
+    # buffer so a single slow tick doesn't trigger a false self-heal.
+    SCHEDULER_WATCHDOG_IDLE_SECONDS = 90 * 60
+
     def _scheduler_watchdog(self):
         """Detect silently-dead apscheduler and self-heal via reload.
 
-        If we've registered any sub-hourly job (e.g. heartbeat */30) but have
-        seen ZERO job events in the last 75 minutes, the scheduler thread is
-        wedged. Reload schedules to recover (this is what manual SIGHUP does).
+        If we've registered any sub-hourly job (e.g. heartbeat */30) but
+        have seen ZERO job events in the last SCHEDULER_WATCHDOG_IDLE_SECONDS,
+        the scheduler thread is wedged. Reload schedules to recover (this
+        is what manual SIGHUP does). This is the *only* recovery path we
+        rely on — no external sentinel needed.
         """
         if not self.scheduler or not self.last_job_event_at:
             return
@@ -444,7 +454,7 @@ class ClawX:
             return
 
         idle = (datetime.now() - self.last_job_event_at).total_seconds()
-        if idle > 75 * 60:
+        if idle > self.SCHEDULER_WATCHDOG_IDLE_SECONDS:
             self.logger.error(
                 f"[Watchdog] Scheduler idle for {idle/60:.1f}min — reloading"
             )

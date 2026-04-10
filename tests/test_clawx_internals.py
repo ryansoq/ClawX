@@ -63,11 +63,13 @@ def stub_clawx(tmp_path):
 
 
 def test_load_schedule_jobs_uses_generous_misfire_and_coalesce(stub_clawx):
-    """Regression: misfire_grace_time MUST be > 1s and coalesce MUST be on.
+    """Regression: misfire_grace_time MUST be generous and coalesce MUST be on.
 
     The 2026-04-09 outage was caused by APScheduler's 1-second default
-    silently dropping jobs under GIL contention. If anyone reverts these
-    args this test fails.
+    silently dropping jobs under GIL contention. After Ryan asked us to
+    drop the external sentinel and rely on the internal watchdog only,
+    we bumped the grace to 1200s (20 minutes) so the in-process recovery
+    has plenty of headroom. If anyone reverts these args this test fails.
     """
     stub_clawx.scheduler = MagicMock()
     stub_clawx._load_schedule_jobs()
@@ -76,8 +78,9 @@ def test_load_schedule_jobs_uses_generous_misfire_and_coalesce(stub_clawx):
     assert stub_clawx.scheduler.add_job.call_count == 2
     for call in stub_clawx.scheduler.add_job.call_args_list:
         kwargs = call.kwargs
-        assert kwargs["misfire_grace_time"] >= 60, (
-            "misfire_grace_time must be generous — see clawx.py comment for incident history"
+        assert kwargs["misfire_grace_time"] >= 600, (
+            "misfire_grace_time must be >= 600s — see clawx.py comment "
+            "for incident history"
         )
         assert kwargs["coalesce"] is True
 
@@ -130,6 +133,15 @@ def test_watchdog_reloads_when_stale(stub_clawx):
     with patch.object(stub_clawx, "_reload_schedules") as reload_mock:
         stub_clawx._scheduler_watchdog()
     reload_mock.assert_called_once()
+
+
+def test_watchdog_idle_threshold_is_generous():
+    """Regression: the idle threshold must be ≥ one full heartbeat cycle
+    plus the misfire grace, so a single delayed tick never trips a false
+    self-heal. We dropped the external sentinel — this is the only line
+    of defense, so it has to be conservative.
+    """
+    assert ClawX.SCHEDULER_WATCHDOG_IDLE_SECONDS >= 60 * 60
 
 
 def test_watchdog_skips_when_no_frequent_jobs(stub_clawx):
