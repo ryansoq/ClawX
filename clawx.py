@@ -1132,14 +1132,10 @@ exec uv run clawx.py
     print(f"[ClawX] Generated {restart_sh}")
     print(f"[ClawX] Restarting in 5 seconds...")
 
-    # Execute in background, detached from current process
-    import subprocess
-    subprocess.Popen(
-        ["bash", str(restart_sh)],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # exec replaces this process with the restart script,
+    # inheriting the current terminal's stdin/stdout/stderr.
+    os.execvp("bash", ["bash", str(restart_sh)])
+    # unreachable — exec replaces the process
     return True
 
 
