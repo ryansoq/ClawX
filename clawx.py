@@ -21,6 +21,8 @@ Usage:
     python clawx.py restart          # Self-restart: stop then relaunch in same terminal
     python clawx.py prompt "text"    # One-shot: run prompt via -p mode, print result
     python clawx.py replay <file>    # Parse transcript log, annotate events, output clean text
+    python clawx.py --no-continue    # Start fresh session (ignore resume_last config)
+    python clawx.py -nc              # Short form of --no-continue
 """
 
 import json
@@ -254,6 +256,9 @@ def set_winsize(fd):
 class ClawX:
     """PTY-based Claude Code wrapper."""
 
+    # CLI override: set to True to skip --continue even if config says resume_last
+    force_no_continue = False
+
     def __init__(self):
         self.config = load_config()
         self.logger = setup_logging(self.config)
@@ -302,8 +307,8 @@ class ClawX:
         else:
             cmd.append("--dangerously-skip-permissions")
 
-        # Resume last session
-        if cfg.get("resume_last"):
+        # Resume last session (unless --no-continue CLI flag)
+        if cfg.get("resume_last") and not self.force_no_continue:
             cmd.append("--continue")
 
         # MCP config
@@ -1163,6 +1168,11 @@ def replay_transcript(path):
 
 
 def main():
+    # Check for --no-continue / -nc flag (can appear anywhere in argv)
+    if "--no-continue" in sys.argv or "-nc" in sys.argv:
+        ClawX.force_no_continue = True
+        sys.argv = [a for a in sys.argv if a not in ("--no-continue", "-nc")]
+
     if len(sys.argv) < 2:
         # Default: run PTY passthrough with restart loop
         PID_FILE.write_text(str(os.getpid()))
