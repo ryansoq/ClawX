@@ -28,4 +28,4 @@ jobs:
           pip install pytest apscheduler
 
       - name: Run ClawX test suite
-        run: python3 tests/test_clawx.py
+        run: python -m pytest tests/ -v
