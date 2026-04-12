@@ -329,6 +329,7 @@ class ClawX:
         self._ratelimit_cooldown_until = 0  # epoch; prevent rapid re-fires
         self._feedback_cooldown_until = 0   # epoch; prevent feedback loop
         self._resume_cooldown_until = 0     # epoch; prevent resume-modal loop
+        self._resume_buffer = bytearray()   # accumulator for multi-chunk modal
         # Compact detection via PTY stream (replaced JSONL-based CompactWatcher).
         self._compact_buffer = bytearray()
         self._compact_cooldown_until = 0  # epoch; suppress rapid re-fires
@@ -947,11 +948,19 @@ class ClawX:
         self.logger.info("[Feedback] Auto-dismissed session feedback modal")
 
     def _maybe_handle_resume_modal(self, chunk):
-        """Detect and auto-select 'Don't ask me again' on the resume-mode modal."""
+        """Detect and auto-select 'Don't ask me again' on the resume-mode modal.
+
+        The modal text arrives split across multiple PTY chunks (ANSI codes
+        and line-by-line rendering), so we accumulate a rolling buffer and
+        run detect_resume_modal on the full window — not on a single chunk.
+        """
         now = time.time()
         if now < self._resume_cooldown_until:
             return
-        choice = detect_resume_modal(chunk)
+        self._resume_buffer.extend(chunk)
+        if len(self._resume_buffer) > 8192:
+            del self._resume_buffer[:-8192]
+        choice = detect_resume_modal(bytes(self._resume_buffer))
         if choice is None:
             return
         try:
@@ -960,6 +969,7 @@ class ClawX:
         except OSError as e:
             self.logger.error(f"[Resume] write failed: {e}")
             return
+        self._resume_buffer = bytearray()
         self._resume_cooldown_until = now + 300  # 5 min cooldown
         self.logger.info("[Resume] Auto-selected 'Don't ask me again' on resume-mode modal")
 

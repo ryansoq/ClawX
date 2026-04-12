@@ -346,6 +346,75 @@ def test_rate_limit_respects_cooldown(stub_clawx):
     assert fake_os.writes == []  # Skipped due to cooldown
 
 
+# ── Resume modal handler tests ─────────────────────────────────────
+
+def test_maybe_handle_resume_modal_writes_choice_3(stub_clawx):
+    """Single-chunk happy path: resume modal in one chunk → send '3'."""
+    stub_clawx.master_fd = 99
+    stub_clawx._resume_buffer = bytearray()
+    stub_clawx._resume_cooldown_until = 0
+
+    fake_os = _FakeOS()
+    chunk = (
+        b"This session is 2h 14m old and 117.6k tokens.\n"
+        b"Resuming the full session will consume a substantial portion of your usage summary.\n\n"
+        b"  1. Resume from summary (recommended)\n"
+        b"  2. Resume full session as-is\n"
+        b"  3. Don't ask me again\n"
+    )
+    with patch.object(clawx.os, "write", side_effect=fake_os.write):
+        stub_clawx._maybe_handle_resume_modal(chunk)
+
+    assert fake_os.writes == [(99, b"3\r")]
+    assert stub_clawx._resume_cooldown_until > 0
+
+
+def test_maybe_handle_resume_modal_accumulates_chunks(stub_clawx):
+    """Regression (2026-04-12): modal text arrives in multiple PTY chunks.
+
+    The handler must accumulate chunks into a rolling buffer — running
+    detect_resume_modal on a single chunk misses the prompt when any
+    single chunk doesn't contain both the keyword AND the '3. Don't ask'
+    line. Ryan hit this after the morning restart.
+    """
+    stub_clawx.master_fd = 99
+    stub_clawx._resume_buffer = bytearray()
+    stub_clawx._resume_cooldown_until = 0
+
+    fake_os = _FakeOS()
+    chunks = [
+        b"This session is 2h 14m old and 117.6k tokens.\n",
+        b"Resuming the full session will consume a substantial portion ",
+        b"of your usage summary.\n\n  1. Resume from summary (recommended)\n",
+        b"  2. Resume full session as-is\n",
+        b"  3. Don't ask me again\n",
+    ]
+    with patch.object(clawx.os, "write", side_effect=fake_os.write):
+        for chunk in chunks:
+            stub_clawx._maybe_handle_resume_modal(chunk)
+
+    assert fake_os.writes == [(99, b"3\r")], (
+        "Handler failed to detect resume modal spread across chunks"
+    )
+
+
+def test_maybe_handle_resume_modal_respects_cooldown(stub_clawx):
+    import time as _time
+    stub_clawx.master_fd = 99
+    stub_clawx._resume_buffer = bytearray()
+    stub_clawx._resume_cooldown_until = _time.time() + 9999
+
+    fake_os = _FakeOS()
+    chunk = (
+        b"Resume full session as-is\n"
+        b"  3. Don't ask me again\n"
+    )
+    with patch.object(clawx.os, "write", side_effect=fake_os.write):
+        stub_clawx._maybe_handle_resume_modal(chunk)
+
+    assert fake_os.writes == []
+
+
 # ── Log rotation tests ─────────────────────────────────────────────
 
 def test_setup_logging_uses_rotating_handler(tmp_path):
