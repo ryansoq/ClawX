@@ -182,6 +182,48 @@ def detect_rate_limit_modal(buf: bytes):
     return 1
 
 
+def detect_resume_modal(buf: bytes):
+    """Detect Claude's resume-mode selection modal in PTY output.
+
+    When `claude --continue` is run on a long session, Claude Code
+    shows a blocking prompt asking how to resume:
+
+        This session is 2h 14m old and 117.6k tokens.
+        Resuming the full session will consume a substantial portion
+        of your usage summary.
+
+        1. Resume from summary (recommended)
+        2. Resume full session as-is
+        3. Don't ask me again
+
+    We auto-select 3 (Don't ask me again) so this never blocks us again.
+
+    Requires BOTH:
+      - a keyword phrase ("resume from summary" / "resume full session")
+      - a start-of-line numbered "3." option whose text is
+        "don't ask me again", which is how the modal is actually rendered.
+    This rejects plain prose that just mentions the phrases.
+
+    Returns 3 if detected, None otherwise.
+    """
+    if not buf:
+        return None
+    text = _ANSI_RE.sub(b"", buf).decode("utf-8", errors="replace").lower()
+    if "resume from summary" not in text and "resume full session" not in text:
+        return None
+    # Reject diff context (line numbers like "117 +")
+    if re.search(r"\d{2,}\s*[+\-]", text):
+        return None
+    # Require a start-of-line "3. Don't ask me again" style option.
+    # Matches: "  3. don't ask me again", "❯ 3) dont ask me again", etc.
+    if not re.search(
+        r"(?:^|\n)[\s>❯]*3[.)\]]\s*don['\u2019]?t ask me again",
+        text,
+    ):
+        return None
+    return 3
+
+
 def detect_feedback_modal(buf: bytes):
     """Detect Claude's session feedback modal in PTY output.
 
@@ -286,6 +328,7 @@ class ClawX:
         self._ratelimit_buffer = bytearray()
         self._ratelimit_cooldown_until = 0  # epoch; prevent rapid re-fires
         self._feedback_cooldown_until = 0   # epoch; prevent feedback loop
+        self._resume_cooldown_until = 0     # epoch; prevent resume-modal loop
         # Compact detection via PTY stream (replaced JSONL-based CompactWatcher).
         self._compact_buffer = bytearray()
         self._compact_cooldown_until = 0  # epoch; suppress rapid re-fires
@@ -903,6 +946,23 @@ class ClawX:
         self._feedback_cooldown_until = now + 300  # 5 min cooldown
         self.logger.info("[Feedback] Auto-dismissed session feedback modal")
 
+    def _maybe_handle_resume_modal(self, chunk):
+        """Detect and auto-select 'Don't ask me again' on the resume-mode modal."""
+        now = time.time()
+        if now < self._resume_cooldown_until:
+            return
+        choice = detect_resume_modal(chunk)
+        if choice is None:
+            return
+        try:
+            with self.write_lock:
+                os.write(self.master_fd, f"{choice}\r".encode())
+        except OSError as e:
+            self.logger.error(f"[Resume] write failed: {e}")
+            return
+        self._resume_cooldown_until = now + 300  # 5 min cooldown
+        self.logger.info("[Resume] Auto-selected 'Don't ask me again' on resume-mode modal")
+
     def run(self):
         """Main loop: PTY passthrough with FIFO injection."""
         # Setup
@@ -1026,6 +1086,7 @@ class ClawX:
                             self._maybe_handle_compact(data)
                             self._maybe_handle_rate_limit(data)
                             self._maybe_handle_feedback_modal(data)
+                            self._maybe_handle_resume_modal(data)
                         except OSError:
                             self.stop_event.set()
                             break

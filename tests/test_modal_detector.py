@@ -5,7 +5,13 @@ false positive types a stray digit into Claude, a false negative leaves
 the session wedged forever. So we test it with realistic-shaped fixtures
 covering the happy path, ANSI noise, and a few negative cases.
 """
-from clawx import detect_startup_modal, detect_compact_event, detect_rate_limit_modal, detect_feedback_modal
+from clawx import (
+    detect_startup_modal,
+    detect_compact_event,
+    detect_rate_limit_modal,
+    detect_feedback_modal,
+    detect_resume_modal,
+)
 
 
 def test_returns_none_on_empty():
@@ -301,3 +307,77 @@ def test_startup_modal_still_detects_real_prompt():
         b"  3. skip\n"
     )
     assert detect_startup_modal(buf) == 3
+
+
+# -------------------- resume-mode modal --------------------
+
+def test_resume_returns_none_on_empty():
+    assert detect_resume_modal(b"") is None
+
+
+def test_resume_returns_none_on_plain_text():
+    assert detect_resume_modal(b"hello world\n> ") is None
+
+
+def test_resume_detects_standard_prompt():
+    """Fixture taken from the real screenshot Ryan sent (2026-04-12)."""
+    buf = (
+        b"This session is 2h 14m old and 117.6k tokens.\n"
+        b"Resuming the full session will consume a substantial portion of your usage summary.\n\n"
+        b"  1. Resume from summary (recommended)\n"
+        b"  2. Resume full session as-is\n"
+        b"  3. Don't ask me again\n"
+        b"\n"
+        b"Enter to confirm \xc2\xb7 Esc to cancel\n"
+    )
+    assert detect_resume_modal(buf) == 3
+
+
+def test_resume_detects_with_ansi():
+    ansi = b"\x1b[1;36m"
+    reset = b"\x1b[0m"
+    buf = (
+        ansi + b"This session is 2h 14m old and 117.6k tokens." + reset + b"\n"
+        b"Resuming the full session will consume a substantial portion of your usage summary.\n"
+        b"  1. Resume from summary (recommended)\n"
+        b"  2. Resume full session as-is\n"
+        b"  3. Don't ask me again\n"
+    )
+    assert detect_resume_modal(buf) == 3
+
+
+def test_resume_requires_dont_ask_option():
+    """If only options 1 and 2 are visible, don't return 3."""
+    buf = (
+        b"Resume from summary or resume full session?\n"
+        b"  1. Resume from summary\n"
+        b"  2. Resume full session as-is\n"
+    )
+    assert detect_resume_modal(buf) is None
+
+
+def test_resume_not_triggered_by_code_diff():
+    """A test file mentioning the string shouldn't trigger the detector."""
+    buf = (
+        b" 117 +    # Resume from summary (recommended)\n"
+        b' 118 +    assert choice == 3  # "Don\'t ask me again"\n'
+    )
+    assert detect_resume_modal(buf) is None
+
+
+def test_resume_not_triggered_by_conversation():
+    """Plain prose with both phrases should NOT trigger (prose lacks
+    the start-of-line '3. Don't ask me again' option format)."""
+    buf = b"Ryan said: resume from summary makes more sense than don't ask me again\n"
+    assert detect_resume_modal(buf) is None
+
+
+def test_resume_detects_cursor_marker():
+    """Handle ❯ cursor prefix that Claude sometimes renders."""
+    buf = (
+        b"Resume from summary (recommended)\n"
+        b"  1. Resume from summary (recommended)\n"
+        b"  2. Resume full session as-is\n"
+        b"\xe2\x9d\xaf 3. Don't ask me again\n"
+    )
+    assert detect_resume_modal(buf) == 3
