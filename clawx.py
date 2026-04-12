@@ -105,11 +105,11 @@ def detect_startup_modal(buf: bytes):
     if not any(kw in text for kw in ("compact", "summarize", "auto-compact")):
         return None
     # Reject if this looks like a code diff (line numbers like "117 +")
-    if re.search(r"\d{2,}\s*[+\-]", text):
+    if re.search(r"\d{2,}\s+[+\-]\s", text):
         return None
     numbers = set()
     # Match options at line start: optional whitespace/cursor (> or ❯), then digit
-    for match in re.finditer(r"(?:^|\n)[\s>❯]*([1-9])[.)\]]", text):
+    for match in re.finditer(r"(?:^|[\n\r])[\s>❯]*([1-9])[.)\]]", text):
         numbers.add(int(match.group(1)))
     if len(numbers) < 2:
         return None
@@ -139,7 +139,7 @@ def detect_compact_event(buf: bytes):
     if "conversation" not in text or "compacted" not in text:
         return None
     # Reject diff context: line numbers like "215 +" indicate code, not real events
-    if re.search(r"\d{2,}\s*[+\-]", text):
+    if re.search(r"\d{2,}\s+[+\-]\s", text):
         return None
     return True
 
@@ -170,11 +170,11 @@ def detect_rate_limit_modal(buf: bytes):
     )):
         return None
     # Reject if this looks like a code diff (line numbers like "117 +")
-    if re.search(r"\d{2,}\s*[+\-]", text):
+    if re.search(r"\d{2,}\s+[+\-]\s", text):
         return None
     numbers = set()
     # Match options at line start: optional whitespace/cursor (> or ❯), then digit
-    for match in re.finditer(r"(?:^|\n)[\s>❯]*([1-9])[.)\]]", text):
+    for match in re.finditer(r"(?:^|[\n\r])[\s>❯]*([1-9])[.)\]]", text):
         numbers.add(int(match.group(1)))
     if len(numbers) < 2:
         return None
@@ -212,12 +212,12 @@ def detect_resume_modal(buf: bytes):
     if "resume from summary" not in text and "resume full session" not in text:
         return None
     # Reject diff context (line numbers like "117 +")
-    if re.search(r"\d{2,}\s*[+\-]", text):
+    if re.search(r"\d{2,}\s+[+\-]\s", text):
         return None
     # Require a start-of-line "3. Don't ask me again" style option.
     # Matches: "  3. don't ask me again", "❯ 3) dont ask me again", etc.
     if not re.search(
-        r"(?:^|\n)[\s>❯]*3[.)\]]\s*don['\u2019]?t ask me again",
+        r"(?:^|[\n\r])[\s>❯]*3[.)\]]\s*don['\u2019]?t ask me again",
         text,
     ):
         return None
@@ -241,7 +241,7 @@ def detect_feedback_modal(buf: bytes):
     if "how is claude doing" not in text:
         return None
     # Reject diff context
-    if re.search(r"\d{2,}\s*[+\-]", text):
+    if re.search(r"\d{2,}\s+[+\-]\s", text):
         return None
     # Check for dismiss option (0: Dismiss)
     if "dismiss" in text:

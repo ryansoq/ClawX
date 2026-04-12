@@ -381,3 +381,66 @@ def test_resume_detects_cursor_marker():
         b"\xe2\x9d\xaf 3. Don't ask me again\n"
     )
     assert detect_resume_modal(buf) == 3
+
+
+def test_resume_detects_carriage_return_only_lines():
+    """Claude Code's PTY output terminates modal lines with \\r (not \\n).
+
+    Regression test for the bug Ryan caught — the real modal in the PTY
+    looked like:
+
+        "\\r❯1Resume from summary (recommended)"
+        "\\r2. Resumefullsessionas-is"
+        "\\r  3. Don't ask me again"
+
+    The line-start anchor was `\\n` only, so the regex missed every option.
+    """
+    buf = (
+        b"\rResuming the full session will consume usage limits.\r"
+        b"\r\xe2\x9d\xaf1Resume from summary (recommended)"
+        b"\r2. Resume full session as-is"
+        b"\r  3. Don't ask me again"
+        b"\r\r\nEnter to confirm\r\n"
+    )
+    assert detect_resume_modal(buf) == 3
+
+
+def test_resume_real_transcript_fixture():
+    """Regression test against a real captured PTY chunk.
+
+    Saved from the 13:42:24 incident where detect_resume_modal failed on
+    live data: Claude rendered the modal with \\r line terminators and
+    our regex required \\n. Fixture is exactly the 8KB sliding window the
+    handler had when the modal was on screen.
+    """
+    import pathlib
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "resume_modal_real.bin"
+    data = fixture.read_bytes()
+    assert detect_resume_modal(data) == 3
+
+
+def test_resume_not_tripped_by_date_in_diff_guard():
+    """The diff-context guard rejects buffers containing code diff patterns.
+
+    Originally `\\d{2,}\\s*[+\\-]` — which also matches dates like
+    '2026-04-12' (`04-`). Tightened to `\\d{2,}\\s+[+\\-]\\s`.
+    """
+    buf = (
+        b"This session is 2h 14m old, started 2026-04-12 08:30.\n"
+        b"Resume from summary (recommended)\n"
+        b"  1. Resume from summary (recommended)\n"
+        b"  2. Resume full session as-is\n"
+        b"  3. Don't ask me again\n"
+    )
+    assert detect_resume_modal(buf) == 3
+
+
+def test_resume_diff_guard_still_rejects_real_code_diff():
+    """Make sure the tightened diff guard still catches real diff context."""
+    buf = (
+        b"Ryan posted this diff:\n"
+        b" 117 +    if 'resume from summary' in text:\n"
+        b" 118 +        return 3\n"
+        b" 119 +    if '  3. don't ask me again' in text:\n"
+    )
+    assert detect_resume_modal(buf) is None
