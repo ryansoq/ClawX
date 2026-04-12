@@ -23,6 +23,8 @@ Usage:
     python clawx.py replay <file>    # Parse transcript log, annotate events, output clean text
     python clawx.py --no-continue    # Start fresh session (ignore resume_last config)
     python clawx.py -nc              # Short form of --no-continue
+    python clawx.py --continue       # Force resume session (ignore resume_last=false in config)
+    python clawx.py -c               # Short form of --continue
 """
 
 import json
@@ -256,8 +258,11 @@ def set_winsize(fd):
 class ClawX:
     """PTY-based Claude Code wrapper."""
 
-    # CLI override: set to True to skip --continue even if config says resume_last
+    # CLI overrides (mutually exclusive):
+    #   force_no_continue → skip --continue even if config says resume_last
+    #   force_continue    → add --continue even if config says resume_last=false
     force_no_continue = False
+    force_continue = False
 
     def __init__(self):
         self.config = load_config()
@@ -307,8 +312,16 @@ class ClawX:
         else:
             cmd.append("--dangerously-skip-permissions")
 
-        # Resume last session (unless --no-continue CLI flag)
-        if cfg.get("resume_last") and not self.force_no_continue:
+        # Resume last session.
+        # Precedence: CLI flag > config
+        #   -c  / --continue    → force resume (overrides resume_last=false)
+        #   -nc / --no-continue → force fresh (overrides resume_last=true)
+        #   neither             → honor config["claude"]["resume_last"]
+        if self.force_continue:
+            cmd.append("--continue")
+        elif self.force_no_continue:
+            pass
+        elif cfg.get("resume_last"):
             cmd.append("--continue")
 
         # MCP config
@@ -1168,10 +1181,19 @@ def replay_transcript(path):
 
 
 def main():
-    # Check for --no-continue / -nc flag (can appear anywhere in argv)
-    if "--no-continue" in sys.argv or "-nc" in sys.argv:
+    # Resume overrides (can appear anywhere in argv).
+    # -c / --continue and -nc / --no-continue are mutually exclusive.
+    want_no_continue = "--no-continue" in sys.argv or "-nc" in sys.argv
+    want_continue = "--continue" in sys.argv or "-c" in sys.argv
+    if want_no_continue and want_continue:
+        print("Error: --continue and --no-continue are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
+    if want_no_continue:
         ClawX.force_no_continue = True
         sys.argv = [a for a in sys.argv if a not in ("--no-continue", "-nc")]
+    if want_continue:
+        ClawX.force_continue = True
+        sys.argv = [a for a in sys.argv if a not in ("--continue", "-c")]
 
     if len(sys.argv) < 2:
         # Default: run PTY passthrough with restart loop

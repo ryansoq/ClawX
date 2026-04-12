@@ -631,6 +631,70 @@ class TestBuildCommand:
         finally:
             self._cleanup(work)
 
+    def test_force_no_continue_overrides_resume_true(self, tmp_path, monkeypatch):
+        """CLI -nc flag must skip --continue even when config says resume_last=true."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log, resume_last=True)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            clawx_mod.ClawX.force_no_continue = True
+            try:
+                cmd = clawx_mod.ClawX().build_command()
+                assert "--continue" not in cmd, f"--no-continue failed to override: {cmd}"
+            finally:
+                clawx_mod.ClawX.force_no_continue = False
+        finally:
+            self._cleanup(work)
+
+    def test_force_continue_overrides_resume_false(self, tmp_path, monkeypatch):
+        """CLI -c flag must add --continue even when config says resume_last=false."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log, resume_last=False)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            clawx_mod.ClawX.force_continue = True
+            try:
+                cmd = clawx_mod.ClawX().build_command()
+                assert "--continue" in cmd, f"--continue failed to override: {cmd}"
+            finally:
+                clawx_mod.ClawX.force_continue = False
+        finally:
+            self._cleanup(work)
+
+    def test_force_continue_with_resume_true_still_works(self, tmp_path, monkeypatch):
+        """-c is harmless when config already has resume_last=true."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log, resume_last=True)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            clawx_mod.ClawX.force_continue = True
+            try:
+                cmd = clawx_mod.ClawX().build_command()
+                assert cmd.count("--continue") == 1, f"--continue duplicated: {cmd}"
+            finally:
+                clawx_mod.ClawX.force_continue = False
+        finally:
+            self._cleanup(work)
+
+    def test_main_rejects_c_and_nc_together(self, tmp_path, monkeypatch, capsys):
+        """-c and -nc are mutually exclusive; main() must exit with code 2."""
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log)
+        work = setup_workdir(tmp_path, config)
+        clawx_mod = self._import_clawx(work, monkeypatch)
+        try:
+            monkeypatch.setattr(sys, "argv", ["clawx.py", "-c", "-nc"])
+            with pytest.raises(SystemExit) as exc:
+                clawx_mod.main()
+            assert exc.value.code == 2
+            err = capsys.readouterr().err
+            assert "mutually exclusive" in err
+        finally:
+            self._cleanup(work)
+
     def test_custom_model_in_cmd(self, tmp_path, monkeypatch):
         mock_log = tmp_path / "mock.log"
         config = make_config(mock_log, model="sonnet")
