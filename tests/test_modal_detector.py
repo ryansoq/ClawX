@@ -130,13 +130,29 @@ def test_compact_not_triggered_by_rate_limit():
 
 
 def test_compact_case_insensitive():
-    buf = b"CONVERSATION COMPACTED\n"
+    # Real marker is always prefixed by ✻; case-insensitive phrase match
+    # still works as long as the sparkle marker is present.
+    buf = b"\xe2\x9c\xbb CONVERSATION COMPACTED\n"
     assert detect_compact_event(buf) is True
 
 
 def test_compact_not_triggered_by_word_compact_alone():
     # The word "compact" alone shouldn't trigger — needs "conversation compacted"
     buf = b"Let me compact these files into an archive\n"
+    assert detect_compact_event(buf) is None
+
+
+def test_compact_not_triggered_without_sparkle_marker():
+    """Regression for 2026-04-14: my own TG replies (rendered into PTY
+    by Claude CLI's TUI) contained the literal phrase in quotes to
+    explain the bug, re-triggering detection. Real system marker is
+    always prefixed with ✻ — chat text is not.
+    """
+    buf = (
+        b"Ryan asked why the session keeps compacting.\n"
+        b"I replied: the marker \"Conversation compacted (ctrl+o for history)\" "
+        b"is being matched even though no real event happened.\n"
+    )
     assert detect_compact_event(buf) is None
 
 

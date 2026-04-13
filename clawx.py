@@ -136,12 +136,16 @@ def detect_compact_event(buf: bytes):
         return None
     # Replace ANSI sequences with a space so cursor-moves don't merge words.
     text = _ANSI_RE.sub(b" ", buf).decode("utf-8", errors="replace").lower()
-    # Require "conversation" and "compacted" to be adjacent (whitespace only
-    # between them). The real Claude message is "Conversation compacted",
-    # possibly with ANSI cursor-moves replaced by spaces. Bare presence of
-    # both words anywhere in the buffer caused self-reference false positives
-    # (e.g. bash/grep stdout about past compact events re-firing detection).
-    if not re.search(r"conversation\s{1,8}compacted", text):
+    # Require the ✻ sparkle marker immediately before "conversation
+    # compacted". Claude CLI prints the compact event as
+    #   ✻ Conversation compacted (ctrl+o for history)
+    # and no other text path renders that exact marker + phrase combo.
+    # Earlier attempts matched either (a) both words anywhere in buffer,
+    # or (b) the adjacent phrase without the marker — both fired on
+    # assistant messages that *talked about* compact events (including
+    # my own TG replies quoted back through the CLI's TUI renderer).
+    # The ✻ gate makes the detector specific to the actual system line.
+    if not re.search(r"✻\s{0,8}conversation\s{1,8}compacted", text):
         return None
     # Reject diff context: line numbers like "215 +" indicate code, not real events
     if re.search(r"\d{2,}\s+[+\-]\s", text):
