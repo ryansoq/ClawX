@@ -255,6 +255,40 @@ def test_compact_not_triggered_by_code_diff():
     assert detect_compact_event(buf) is None
 
 
+def test_compact_not_triggered_by_log_grep_stdout():
+    """Real false positive from 2026-04-14: grep stdout on clawx logs
+    contained 'conversation' and 'compacted' in different lines, which
+    the old loose matcher ('both words anywhere in buffer') flagged as
+    a compact event. The new matcher requires adjacency.
+    """
+    buf = (
+        b"2026-04-13 23:02:36 [ClawX] [Compact] detected via PTY stream\n"
+        b"2026-04-13 23:02:39 [ClawX] Injected post-compact identity reload\n"
+        b"Note: previous conversation covered the Polymarket arbitrage question\n"
+        b"later the same file shows the word compacted in a different line\n"
+    )
+    assert detect_compact_event(buf) is None
+
+
+def test_compact_not_triggered_by_discussion_about_compact():
+    """Real-world false positive: chat messages talking about compact
+    events without the actual 'Conversation compacted' phrase.
+    """
+    buf = (
+        b"Ryan: the conversation is getting long, are we near compact?\n"
+        b"Nami: /context shows 78k/200k, not close to being compacted yet\n"
+    )
+    assert detect_compact_event(buf) is None
+
+
+def test_compact_still_detects_adjacent_with_multiple_spaces():
+    """Edge case: multiple ANSI cursor-moves become multiple spaces
+    after _ANSI_RE.sub — still within the \\s{1,8} bound.
+    """
+    buf = b"\xe2\x9c\xbb Conversation    compacted (ctrl+o for history)\n"
+    assert detect_compact_event(buf) is True
+
+
 # ── Feedback modal detector tests ───────────────────────────────
 
 def test_feedback_returns_none_on_empty():

@@ -136,7 +136,12 @@ def detect_compact_event(buf: bytes):
         return None
     # Replace ANSI sequences with a space so cursor-moves don't merge words.
     text = _ANSI_RE.sub(b" ", buf).decode("utf-8", errors="replace").lower()
-    if "conversation" not in text or "compacted" not in text:
+    # Require "conversation" and "compacted" to be adjacent (whitespace only
+    # between them). The real Claude message is "Conversation compacted",
+    # possibly with ANSI cursor-moves replaced by spaces. Bare presence of
+    # both words anywhere in the buffer caused self-reference false positives
+    # (e.g. bash/grep stdout about past compact events re-firing detection).
+    if not re.search(r"conversation\s{1,8}compacted", text):
         return None
     # Reject diff context: line numbers like "215 +" indicate code, not real events
     if re.search(r"\d{2,}\s+[+\-]\s", text):
