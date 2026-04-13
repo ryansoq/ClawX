@@ -431,3 +431,237 @@ def test_setup_logging_uses_rotating_handler(tmp_path):
         logger.removeHandler(h)
     for h in list(logging.getLogger("apscheduler").handlers):
         logging.getLogger("apscheduler").removeHandler(h)
+
+
+# ── Cron field validation (2026-04-13 audit HIGH #1 / MED #3 / MED #4) ──
+
+def test_validate_cron_parts_rejects_wrong_field_count(stub_clawx):
+    """MED #3: cron with != 5 fields must be rejected, not crash with IndexError."""
+    parts, ok = stub_clawx._validate_cron_parts("bad", "0 0 0 0")  # 4 fields
+    assert ok is False
+    stub_clawx.logger.error.assert_called()
+
+    parts, ok = stub_clawx._validate_cron_parts("bad6", "0 0 0 0 0 0")  # 6 fields
+    assert ok is False
+
+
+def test_validate_cron_parts_accepts_valid_5_field(stub_clawx):
+    parts, ok = stub_clawx._validate_cron_parts("heartbeat", "*/30 * * * *")
+    assert ok is True
+    assert parts == ["*/30", "*", "*", "*", "*"]
+
+
+def test_validate_cron_parts_warns_on_numeric_day_of_week_range(stub_clawx):
+    """MED #4: numeric day_of_week like '1-5' means Tue-Sat in APScheduler,
+    not Mon-Fri like POSIX cron. Loader must warn so future-us doesn't step
+    on the 2026-04-13 tw-stock-preopen rake again."""
+    parts, ok = stub_clawx._validate_cron_parts("tw", "30 8 * * 1-5")
+    assert ok is True  # We accept it, but we warn
+    warning_calls = stub_clawx.logger.warning.call_args_list
+    assert any("0=Monday" in str(c) or "mon-fri" in str(c) for c in warning_calls), (
+        f"expected a day_of_week warning, got warnings: {warning_calls}"
+    )
+
+
+def test_validate_cron_parts_no_warning_on_literal_day_of_week(stub_clawx):
+    stub_clawx._validate_cron_parts("tw", "30 8 * * mon-fri")
+    warning_calls = stub_clawx.logger.warning.call_args_list
+    assert not any("0=Monday" in str(c) for c in warning_calls), (
+        f"should not warn on literal form, got: {warning_calls}"
+    )
+
+
+def test_load_schedule_jobs_skips_bad_cron_instead_of_aborting(stub_clawx):
+    """MED #3 + HIGH #1 amplifier: one malformed cron must NOT prevent
+    other jobs from being registered. Previously, parts[4] on a 4-field
+    string raised IndexError which bubbled up and (combined with
+    remove_all_jobs() being called before validation) nuked every job.
+    """
+    stub_clawx.config["schedule"] = {
+        "good": {"enabled": True, "cron": "*/30 * * * *", "prompt": "ok"},
+        "bad": {"enabled": True, "cron": "0 0 0 0", "prompt": "broken"},  # 4 fields
+        "alsogood": {"enabled": True, "cron": "0 22 * * 0", "prompt": "weekly"},
+    }
+    stub_clawx.scheduler = MagicMock()
+    stub_clawx._load_schedule_jobs()  # Must not raise
+
+    registered = [c.kwargs["id"] for c in stub_clawx.scheduler.add_job.call_args_list]
+    assert "good" in registered
+    assert "alsogood" in registered
+    assert "bad" not in registered
+
+
+# ── SIGHUP reload atomic-swap safety (2026-04-13 audit HIGH #1) ──
+
+def test_reload_schedules_preserves_old_jobs_on_bad_new_config(stub_clawx):
+    """HIGH #1: If the new config has a cron that CronTrigger rejects, the
+    old schedule must remain intact. Previously, _reload_schedules called
+    remove_all_jobs() *before* validating, so one typo would silently
+    leave ClawX with 0 jobs — heartbeat dead, morning report dead."""
+    stub_clawx.scheduler = MagicMock()
+    # Pretend the staging pass surfaces a broken job. We simulate by
+    # returning a new config whose enabled job has a cron CronTrigger
+    # refuses.
+    bad_cfg = {
+        "claude": stub_clawx.config["claude"],
+        "session": stub_clawx.config["session"],
+        "schedule": {
+            "broken": {
+                "enabled": True,
+                "cron": "* * * * 99",  # invalid day_of_week
+                "prompt": "no",
+            },
+        },
+        "logging": stub_clawx.config.get("logging", {}),
+    }
+    with patch.object(clawx, "load_config", return_value=bad_cfg):
+        stub_clawx._reload_schedules()
+
+    # The critical assertion: remove_all_jobs was NOT called. Old jobs
+    # are still live.
+    stub_clawx.scheduler.remove_all_jobs.assert_not_called()
+    stub_clawx.logger.error.assert_called()
+
+
+def test_reload_schedules_atomic_swap_on_valid_config(stub_clawx):
+    """Happy path: valid new config → staged, then swapped."""
+    stub_clawx.scheduler = MagicMock()
+    stub_clawx.scheduler.get_jobs.return_value = ["x"]
+    new_cfg = {
+        "claude": stub_clawx.config["claude"],
+        "session": stub_clawx.config["session"],
+        "schedule": {
+            "new_job": {
+                "enabled": True,
+                "cron": "15 9 * * mon-fri",
+                "prompt": "hello",
+            },
+        },
+        "logging": stub_clawx.config.get("logging", {}),
+    }
+    with patch.object(clawx, "load_config", return_value=new_cfg):
+        stub_clawx._reload_schedules()
+
+    # Old jobs cleared, new ones added.
+    stub_clawx.scheduler.remove_all_jobs.assert_called_once()
+    add_calls = stub_clawx.scheduler.add_job.call_args_list
+    assert any(c.kwargs.get("id") == "new_job" for c in add_calls)
+    # Config was updated to the new one.
+    assert stub_clawx.config is new_cfg
+
+
+def test_reload_schedules_survives_config_parse_error(stub_clawx):
+    """Unchanged behavior from original test — ValueError from load_config
+    must be caught and old schedule preserved."""
+    stub_clawx.scheduler = MagicMock()
+    with patch.object(clawx, "load_config", side_effect=ValueError("bad json")):
+        stub_clawx._reload_schedules()
+    stub_clawx.scheduler.remove_all_jobs.assert_not_called()
+    stub_clawx.logger.error.assert_called()
+
+
+def test_stage_schedule_jobs_returns_triggers(stub_clawx):
+    cfg = {
+        "schedule": {
+            "a": {"enabled": True, "cron": "*/30 * * * *", "prompt": "p1"},
+            "b": {"enabled": False, "cron": "0 0 * * *", "prompt": "disabled"},
+            "c": {"enabled": True, "cron": "0 9 * * mon-fri", "prompt": "p2"},
+        }
+    }
+    staged = stub_clawx._stage_schedule_jobs(cfg)
+    names = [name for name, _, _ in staged]
+    assert "a" in names
+    assert "c" in names
+    assert "b" not in names  # disabled
+    for _, trigger, _ in staged:
+        assert trigger is not None
+
+
+def test_stage_schedule_jobs_raises_on_bad_field_count(stub_clawx):
+    """Strict mode: reload staging must raise on any validation failure so
+    the caller can preserve the old schedule instead of silently losing it."""
+    cfg = {
+        "schedule": {
+            "bad_count": {"enabled": True, "cron": "0 0 0", "prompt": "3 fields"},
+        }
+    }
+    with pytest.raises(ValueError, match="5 fields"):
+        stub_clawx._stage_schedule_jobs(cfg)
+
+
+def test_stage_schedule_jobs_raises_on_invalid_cron_value(stub_clawx):
+    cfg = {
+        "schedule": {
+            "bad_dow": {"enabled": True, "cron": "* * * * 99", "prompt": "invalid dow"},
+        }
+    }
+    with pytest.raises(ValueError):
+        stub_clawx._stage_schedule_jobs(cfg)
+
+
+def test_stage_schedule_jobs_ignores_disabled(stub_clawx):
+    """Disabled jobs are skipped — even a broken disabled job must not
+    fail the staging pass."""
+    cfg = {
+        "schedule": {
+            "off": {"enabled": False, "cron": "garbage garbage", "prompt": "no"},
+            "good": {"enabled": True, "cron": "*/30 * * * *", "prompt": "ok"},
+        }
+    }
+    staged = stub_clawx._stage_schedule_jobs(cfg)
+    assert len(staged) == 1
+    assert staged[0][0] == "good"
+
+
+# ── Restart counter reset (2026-04-13 audit HIGH #2) ──
+
+def test_maybe_reset_restart_count_zeros_after_threshold(stub_clawx):
+    """HIGH #2: once the current child has been alive for longer than
+    RESTART_COUNT_RESET_SECONDS, restart_count must zero so a later burst
+    of crashes can still be recovered."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    stub_clawx.restart_count = 2
+    stub_clawx.last_restart_at = _dt.now() - _td(
+        seconds=stub_clawx.RESTART_COUNT_RESET_SECONDS + 60
+    )
+    stub_clawx._maybe_reset_restart_count()
+    assert stub_clawx.restart_count == 0
+    stub_clawx.logger.info.assert_called()
+
+
+def test_maybe_reset_restart_count_noop_when_recent(stub_clawx):
+    """Boundary: if the current child hasn't been alive long enough,
+    counter stays put (otherwise a rapid death after a rapid restart
+    would silently reset the counter and defeat max_restart_attempts)."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    stub_clawx.restart_count = 2
+    stub_clawx.last_restart_at = _dt.now() - _td(seconds=60)
+    stub_clawx._maybe_reset_restart_count()
+    assert stub_clawx.restart_count == 2
+
+
+def test_maybe_reset_restart_count_noop_when_zero(stub_clawx):
+    """No restarts = nothing to reset."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    stub_clawx.restart_count = 0
+    stub_clawx.last_restart_at = _dt.now() - _td(hours=10)
+    stub_clawx._maybe_reset_restart_count()
+    assert stub_clawx.restart_count == 0
+
+
+def test_maybe_reset_restart_count_noop_when_no_last_restart(stub_clawx):
+    """Pre-first-spawn (last_restart_at is None) must not crash."""
+    stub_clawx.restart_count = 2
+    stub_clawx.last_restart_at = None
+    stub_clawx._maybe_reset_restart_count()
+    assert stub_clawx.restart_count == 2  # untouched
+
+
+def test_restart_reset_threshold_is_reasonable():
+    """Sanity: the reset threshold should be generous enough that a truly
+    unstable child doesn't look stable by accident, but short enough that
+    a rebooted-once session doesn't carry a stuck counter for hours."""
+    assert 10 * 60 <= ClawX.RESTART_COUNT_RESET_SECONDS <= 2 * 3600

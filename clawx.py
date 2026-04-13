@@ -316,6 +316,9 @@ class ClawX:
         self.started_at = None
         self.scheduler = None
         self.restart_count = 0
+        self.last_restart_at = None  # Set on every _spawn_claude; used by
+                                     # _health_loop to reset restart_count
+                                     # after sustained uptime (HIGH #2 fix).
         self.restart_requested = False
         # Scheduler liveness tracking — used by watchdog to detect silent
         # apscheduler death (jobs registered but never fire).
@@ -441,27 +444,78 @@ class ClawX:
         elif event.code == EVENT_JOB_MISSED:
             self.logger.warning(f"[Schedule] Job '{event.job_id}' MISSED")
 
+    # Cron-style day_of_week strings we accept without warning. POSIX crontab
+    # uses 0=Sunday, but APScheduler uses 0=Monday — a silent off-by-one trap
+    # that caused the 2026-04-13 tw-stock-preopen miss. We accept numeric
+    # forms for compatibility but warn so the user knows to switch to literals.
+    _CRON_FIELDS = ("minute", "hour", "day", "month", "day_of_week")
+    _DAY_OF_WEEK_LITERALS = re.compile(
+        r"^[\*\?/,\-mtwfsuonehrdia0-6]+$", re.IGNORECASE
+    )
+    _DAY_OF_WEEK_NUMERIC_RANGE = re.compile(r"^[0-6](?:[,\-][0-6])+$")
+
+    def _validate_cron_parts(self, name: str, cron_expr: str):
+        """Split and validate a 5-field cron expression.
+
+        Returns (parts, ok). If ok is False, the job must be skipped by the
+        caller. We log here so a bad job is visible in the log but does not
+        abort the whole reload (protects the HIGH #1 silent-wipe case).
+        """
+        parts = cron_expr.split()
+        if len(parts) != 5:
+            self.logger.error(
+                f"Scheduled '{name}': cron must have 5 fields "
+                f"(minute hour day month day_of_week), got {len(parts)}: "
+                f"{cron_expr!r} — skipping this job"
+            )
+            return parts, False
+
+        dow = parts[4]
+        # Warn on ambiguous numeric day_of_week — the POSIX/APScheduler
+        # off-by-one trap. Literals (mon-fri) are unambiguous.
+        if self._DAY_OF_WEEK_NUMERIC_RANGE.match(dow):
+            self.logger.warning(
+                f"Scheduled '{name}': day_of_week={dow!r} is numeric — "
+                f"APScheduler uses 0=Monday (NOT 0=Sunday like POSIX cron). "
+                f"If you meant Mon-Fri, use 'mon-fri' instead of '1-5'."
+            )
+        return parts, True
+
     def _load_schedule_jobs(self):
         """Load (or reload) jobs from self.config into self.scheduler.
 
         Caller is responsible for clearing existing jobs first if reloading.
+        Individual job failures are logged and skipped — they never abort
+        the whole reload (otherwise one bad cron would wipe every job; see
+        _reload_schedules for the atomic-swap safety net that complements
+        this per-job isolation).
         """
         schedules = self.config.get("schedule", {})
 
         for name, sched in schedules.items():
             if not sched.get("enabled", False):
                 continue
-            cron_expr = sched["cron"]
-            prompt = sched["prompt"]
+            cron_expr = sched.get("cron", "")
+            prompt = sched.get("prompt", "")
 
-            parts = cron_expr.split()
-            trigger = CronTrigger(
-                minute=parts[0],
-                hour=parts[1],
-                day=parts[2],
-                month=parts[3],
-                day_of_week=parts[4],
-            )
+            parts, ok = self._validate_cron_parts(name, cron_expr)
+            if not ok:
+                continue
+
+            try:
+                trigger = CronTrigger(
+                    minute=parts[0],
+                    hour=parts[1],
+                    day=parts[2],
+                    month=parts[3],
+                    day_of_week=parts[4],
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Scheduled '{name}': CronTrigger rejected {cron_expr!r}: "
+                    f"{e} — skipping this job"
+                )
+                continue
 
             # Generous misfire_grace_time so jobs don't get silently dropped
             # if the scheduler thread is briefly slow. APScheduler's default
@@ -521,21 +575,142 @@ class ClawX:
     def _reload_schedules(self, *_):
         """Reload schedules from config.json without restarting ClawX.
 
-        Triggered by SIGHUP. Re-reads config, removes all current jobs,
-        and re-adds them from the new config. Safe to call repeatedly.
+        Triggered by SIGHUP. Uses a staging pass so that a bad new config
+        cannot wipe the running schedule — the old implementation called
+        remove_all_jobs() *before* validating the new config, so one typo
+        would silently kill heartbeat + morning report until manual fix
+        (HIGH #1 in the 2026-04-13 audit). The fix:
+
+          1. Reload config, keep a backup of the old one
+          2. Dry-run validate every new job (CronTrigger build) into a
+             staging list; if any job explodes, log and bail — old schedule
+             untouched
+          3. Only after the staging pass fully succeeds do we swap: remove
+             all old jobs, install the new ones. Both steps run under the
+             apscheduler's own lock so there's no window where 0 jobs exist
+             if the process is queried mid-swap
+
+        Individual per-job failures still use _load_schedule_jobs's
+        skip-and-log behavior, but THAT path is used only for "partial
+        validity" (e.g. user intentionally has a malformed job in config
+        that they want ignored); SIGHUP reload is stricter — any failure
+        in staging aborts the whole swap, because at SIGHUP time we know
+        the intent is "apply new config or nothing."
         """
         self.logger.info("[SIGHUP] Reloading schedules from config.json...")
+        old_config = self.config
         try:
-            self.config = load_config()
-            if self.scheduler is None:
-                self.logger.warning("[SIGHUP] Scheduler not initialized yet, skipping")
-                return
-            self.scheduler.remove_all_jobs()
-            self._load_schedule_jobs()
-            n = len(self.scheduler.get_jobs())
-            self.logger.info(f"[SIGHUP] Reload OK ({n} active jobs)")
+            new_config = load_config()
         except Exception as e:
-            self.logger.error(f"[SIGHUP] Reload failed: {e}")
+            self.logger.error(f"[SIGHUP] Reload failed: config parse error: {e}")
+            return
+        if self.scheduler is None:
+            # Nothing to reload into yet; just update the stored config so
+            # the next _setup_schedules uses it.
+            self.config = new_config
+            self.logger.warning("[SIGHUP] Scheduler not initialized yet, skipping")
+            return
+
+        # Staging pass: build every trigger without touching live state.
+        try:
+            staged = self._stage_schedule_jobs(new_config)
+        except Exception as e:
+            self.logger.error(
+                f"[SIGHUP] Reload aborted — staging failed: {e} "
+                f"(old schedule preserved)"
+            )
+            return
+
+        # Staging OK — commit. We temporarily set self.config to new so
+        # _load_schedule_jobs reads the right schedules, then restore on
+        # failure (defense-in-depth; staging pass should have caught
+        # everything).
+        try:
+            self.scheduler.remove_all_jobs()
+            self.config = new_config
+            self._load_schedule_jobs()
+        except Exception as e:
+            self.logger.error(
+                f"[SIGHUP] Reload commit failed: {e} — restoring old config"
+            )
+            self.config = old_config
+            try:
+                self.scheduler.remove_all_jobs()
+                self._load_schedule_jobs()
+            except Exception as e2:
+                self.logger.error(f"[SIGHUP] Old-config restore ALSO failed: {e2}")
+            return
+
+        n = len(self.scheduler.get_jobs())
+        self.logger.info(
+            f"[SIGHUP] Reload OK ({n} active jobs; {len(staged)} staged)"
+        )
+
+    def _stage_schedule_jobs(self, config: dict) -> list:
+        """Build every enabled job's CronTrigger without touching the live
+        scheduler. Used by _reload_schedules to validate a new config
+        before committing.
+
+        STRICT mode: any validation failure (bad field count, unparsable
+        day_of_week, CronTrigger rejection) raises. The caller
+        (_reload_schedules) catches the exception and aborts the swap,
+        preserving the live schedule. This is the HIGH #1 safety net —
+        SIGHUP reload is all-or-nothing, which is the right semantics for
+        "apply new config."
+
+        Note: _load_schedule_jobs (used at initial startup) is lenient
+        and skips individual broken jobs; the two paths intentionally
+        differ. Startup wants to come up with as much as it can;
+        SIGHUP wants to either fully apply the user's intent or fully
+        decline it.
+
+        Returns a list of (name, trigger, prompt) tuples for every
+        enabled job.
+        """
+        schedules = config.get("schedule", {})
+        if not isinstance(schedules, dict):
+            raise TypeError(
+                f"config.schedule must be a dict, got {type(schedules).__name__}"
+            )
+        staged = []
+        for name, sched in schedules.items():
+            if not isinstance(sched, dict):
+                raise TypeError(
+                    f"schedule['{name}'] must be a dict, got "
+                    f"{type(sched).__name__}"
+                )
+            if not sched.get("enabled", False):
+                continue
+            cron_expr = sched.get("cron", "")
+            prompt = sched.get("prompt", "")
+            parts = cron_expr.split()
+            if len(parts) != 5:
+                raise ValueError(
+                    f"'{name}': cron must have 5 fields, got {len(parts)}: "
+                    f"{cron_expr!r}"
+                )
+            # Warn (but don't reject) numeric day_of_week ranges — legal
+            # but easy to get wrong per APScheduler's 0=Monday semantics.
+            if self._DAY_OF_WEEK_NUMERIC_RANGE.match(parts[4]):
+                self.logger.warning(
+                    f"[SIGHUP staging] '{name}': day_of_week={parts[4]!r} "
+                    f"is numeric — APScheduler uses 0=Monday (NOT POSIX's "
+                    f"0=Sunday). Use 'mon-fri' if you meant weekdays."
+                )
+            try:
+                trigger = CronTrigger(
+                    minute=parts[0],
+                    hour=parts[1],
+                    day=parts[2],
+                    month=parts[3],
+                    day_of_week=parts[4],
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"'{name}': CronTrigger rejected {cron_expr!r}: {e}"
+                ) from e
+            staged.append((name, trigger, prompt))
+        return staged
 
     def _find_bun(self):
         """Return an invocable bun identifier or None if bun is missing.
@@ -757,6 +932,35 @@ class ClawX:
         except ChildProcessError:
             return False
 
+    # Sustained-uptime threshold for resetting restart_count. After the
+    # child has been alive for this long since the most recent respawn,
+    # we consider the restart "fully successful" and zero the counter so
+    # a later burst of crashes can still be recovered (HIGH #2 fix —
+    # previously one burst of 3 early crashes would permanently disable
+    # auto-restart for the whole ClawX session lifetime).
+    RESTART_COUNT_RESET_SECONDS = 30 * 60
+
+    def _maybe_reset_restart_count(self):
+        """Zero restart_count if the current child has been alive long
+        enough to qualify as stable. Called from _health_loop on every
+        "Health OK" tick. Extracted so it can be unit-tested without
+        touching threads / signals / Event.
+
+        No-op if no restarts have happened, or if we haven't been tracking
+        a last_restart_at (e.g. first spawn), or if not enough time has
+        passed since the most recent respawn.
+        """
+        if self.restart_count <= 0 or self.last_restart_at is None:
+            return
+        since_restart = (datetime.now() - self.last_restart_at).total_seconds()
+        if since_restart < self.RESTART_COUNT_RESET_SECONDS:
+            return
+        self.logger.info(
+            f"Restart counter reset: child stable for "
+            f"{since_restart/60:.1f}min (was {self.restart_count})"
+        )
+        self.restart_count = 0
+
     def _health_loop(self):
         """Background health check + auto-restart."""
         session_cfg = self.config["session"]
@@ -770,6 +974,7 @@ class ClawX:
 
             if self._is_alive():
                 uptime = str(datetime.now() - self.started_at).split(".")[0] if self.started_at else "?"
+                self._maybe_reset_restart_count()
                 self.logger.info(f"Health OK | uptime={uptime} | restarts={self.restart_count}")
                 self._scheduler_watchdog()
             elif session_cfg.get("auto_restart", True) and not self.stop_event.is_set():
@@ -813,6 +1018,7 @@ class ClawX:
             self.master_fd = master_fd
             self.child_pid = child_pid
             self.started_at = datetime.now()
+            self.last_restart_at = self.started_at
 
             # Reset startup-modal detection state. We re-arm on every spawn
             # because --continue can land us in a different conversation each
