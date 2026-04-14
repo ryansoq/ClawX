@@ -116,19 +116,94 @@ def detect_startup_modal(buf: bytes):
     return max(numbers)
 
 
+def _find_active_session_jsonl():
+    """Return the most recently modified Claude session jsonl, or None.
+
+    Claude CLI writes one jsonl per session under
+    ``~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl``. ClawX
+    runs a single interactive session at a time, so the most-recently
+    modified file across all project dirs is the active session.
+    """
+    proj_root = Path.home() / ".claude" / "projects"
+    if not proj_root.exists():
+        return None
+    candidates = list(proj_root.rglob("*.jsonl"))
+    if not candidates:
+        return None
+    try:
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _verify_compact_in_jsonl(window_seconds: int = 120) -> bool:
+    """Ground-truth check: did Claude CLI actually write a compact summary?
+
+    Claude CLI marks a real compaction by writing a jsonl entry with
+    ``isCompactSummary: true`` *before* rendering the banner to the PTY
+    (observed: ~3 ms lead). Checking the jsonl tail for a recent such
+    entry gives us a ground truth the PTY text match can't provide.
+
+    Returns True only if the jsonl's tail contains a compact summary
+    entry whose timestamp is within ``window_seconds`` of now.
+    """
+    jsonl = _find_active_session_jsonl()
+    if jsonl is None:
+        return False
+    try:
+        with open(jsonl, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            chunk = min(size, 32 * 1024)
+            f.seek(size - chunk)
+            tail = f.read()
+    except OSError:
+        return False
+    now = time.time()
+    for raw in tail.splitlines()[-10:]:
+        try:
+            entry = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not entry.get("isCompactSummary"):
+            continue
+        ts = entry.get("timestamp")
+        if not isinstance(ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            age = now - dt.timestamp()
+        except ValueError:
+            continue
+        if -30 <= age <= window_seconds:
+            return True
+    return False
+
+
 def detect_compact_event(buf: bytes):
     """Detect a compact notification in PTY output.
 
-    When Claude Code auto-compacts context it prints:
-        ✻ Conversation compacted (ctrl+o for history)
+    When Claude Code auto-compacts context it prints a sparkle-marked
+    banner line. We detect real compactions in two stages:
 
-    ANSI cursor-move sequences (e.g. \\x1b[1C) replace spaces in PTY
-    output, so after stripping we match the words individually rather
-    than as a contiguous phrase.
+      1. **PTY regex pre-filter** (cheap): sparkle marker + adjacent
+         "conversation compacted" words, after ANSI stripping. This
+         rejects most noise but can still false-positive when the
+         assistant's own text quotes the banner (Claude CLI's TUI
+         renders assistant replies back through the PTY, and the
+         detector sees its own words echoed).
 
-    To avoid false positives from code diffs that discuss compact events,
-    we reject buffers that look like diff context (multi-digit line numbers
-    followed by +/-).
+      2. **JSONL ground-truth verification**: cross-check with
+         ``~/.claude/projects/**/*.jsonl`` — Claude CLI writes an
+         ``isCompactSummary: true`` entry for real compactions only,
+         and that file is not influenced by assistant text. If the
+         tail of the active session jsonl has a compact summary
+         within the last ~120 s, it's real.
+
+    Both stages must pass. Self-references (assistant quoting the
+    banner) pass stage 1 but fail stage 2 because no jsonl summary
+    exists. Real system events pass both because Claude writes the
+    summary ~3 ms before rendering the banner.
 
     Returns True if detected, None otherwise.
     """
@@ -136,19 +211,15 @@ def detect_compact_event(buf: bytes):
         return None
     # Replace ANSI sequences with a space so cursor-moves don't merge words.
     text = _ANSI_RE.sub(b" ", buf).decode("utf-8", errors="replace").lower()
-    # Require the ✻ sparkle marker immediately before "conversation
-    # compacted". Claude CLI prints the compact event as
-    #   ✻ Conversation compacted (ctrl+o for history)
-    # and no other text path renders that exact marker + phrase combo.
-    # Earlier attempts matched either (a) both words anywhere in buffer,
-    # or (b) the adjacent phrase without the marker — both fired on
-    # assistant messages that *talked about* compact events (including
-    # my own TG replies quoted back through the CLI's TUI renderer).
-    # The ✻ gate makes the detector specific to the actual system line.
     if not re.search(r"✻\s{0,8}conversation\s{1,8}compacted", text):
         return None
     # Reject diff context: line numbers like "215 +" indicate code, not real events
     if re.search(r"\d{2,}\s+[+\-]\s", text):
+        return None
+    # Round 3 — jsonl ground-truth gate. Assistant self-references
+    # pass the regex but fail here because no real compact summary
+    # was written.
+    if not _verify_compact_in_jsonl():
         return None
     return True
 

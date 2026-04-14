@@ -5,6 +5,9 @@ false positive types a stray digit into Claude, a false negative leaves
 the session wedged forever. So we test it with realistic-shaped fixtures
 covering the happy path, ANSI noise, and a few negative cases.
 """
+from datetime import datetime, timezone
+
+import clawx
 from clawx import (
     detect_startup_modal,
     detect_compact_event,
@@ -12,6 +15,28 @@ from clawx import (
     detect_feedback_modal,
     detect_resume_modal,
 )
+
+import pytest
+
+
+@pytest.fixture
+def jsonl_verified(monkeypatch):
+    """Force the Round-3 jsonl ground-truth gate to pass.
+
+    detect_compact_event() now cross-checks ~/.claude/projects/**.jsonl
+    for a recent isCompactSummary entry. Positive unit tests don't want
+    to create real jsonl fixtures — they just want to verify the PTY
+    stage — so this fixture stubs the verifier to always return True.
+    """
+    monkeypatch.setattr(clawx, "_verify_compact_in_jsonl", lambda *a, **k: True)
+    yield
+
+
+@pytest.fixture
+def jsonl_unverified(monkeypatch):
+    """Force the Round-3 jsonl gate to fail (simulates assistant echo)."""
+    monkeypatch.setattr(clawx, "_verify_compact_in_jsonl", lambda *a, **k: False)
+    yield
 
 
 def test_returns_none_on_empty():
@@ -104,12 +129,12 @@ def test_compact_returns_none_on_plain_text():
     assert detect_compact_event(b"hello world\n> ") is None
 
 
-def test_compact_detects_standard_message():
+def test_compact_detects_standard_message(jsonl_verified):
     buf = b"\xe2\x9c\xbb Conversation compacted (ctrl+o for history)\n"
     assert detect_compact_event(buf) is True
 
 
-def test_compact_detects_with_ansi():
+def test_compact_detects_with_ansi(jsonl_verified):
     # Real PTY output: grey text with ANSI color codes
     buf = (
         b"\x1b[38;5;246m\xe2\x9c\xbb\x1b[1C"
@@ -129,7 +154,7 @@ def test_compact_not_triggered_by_rate_limit():
     assert detect_compact_event(buf) is None
 
 
-def test_compact_case_insensitive():
+def test_compact_case_insensitive(jsonl_verified):
     # Real marker is always prefixed by ✻; case-insensitive phrase match
     # still works as long as the sparkle marker is present.
     buf = b"\xe2\x9c\xbb CONVERSATION COMPACTED\n"
@@ -297,12 +322,62 @@ def test_compact_not_triggered_by_discussion_about_compact():
     assert detect_compact_event(buf) is None
 
 
-def test_compact_still_detects_adjacent_with_multiple_spaces():
+def test_compact_still_detects_adjacent_with_multiple_spaces(jsonl_verified):
     """Edge case: multiple ANSI cursor-moves become multiple spaces
     after _ANSI_RE.sub — still within the \\s{1,8} bound.
     """
     buf = b"\xe2\x9c\xbb Conversation    compacted (ctrl+o for history)\n"
     assert detect_compact_event(buf) is True
+
+
+def test_compact_blocked_by_jsonl_gate_when_assistant_echoes(jsonl_unverified):
+    """Round 3 regression: the sparkle-marker phrase matches the regex
+    but there's no real compact summary in the session jsonl. This is
+    the exact failure mode we keep hitting — assistant replies quoting
+    the banner get echoed through Claude CLI's TUI into the PTY.
+    The jsonl gate now catches these.
+    """
+    buf = b"\xe2\x9c\xbb Conversation compacted (ctrl+o for history)\n"
+    assert detect_compact_event(buf) is None
+
+
+def test_compact_jsonl_verifier_handles_missing_project_dir(tmp_path, monkeypatch):
+    """_verify_compact_in_jsonl must not crash if ~/.claude/projects is
+    missing or empty. Returns False cleanly.
+    """
+    monkeypatch.setattr(clawx.Path, "home", classmethod(lambda cls: tmp_path))
+    assert clawx._verify_compact_in_jsonl() is False
+
+
+def test_compact_jsonl_verifier_detects_recent_summary(tmp_path, monkeypatch):
+    """_verify_compact_in_jsonl returns True when the latest jsonl has a
+    recent isCompactSummary entry.
+    """
+    proj = tmp_path / ".claude" / "projects" / "-home-test"
+    proj.mkdir(parents=True)
+    session = proj / "abc.jsonl"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session.write_text(
+        '{"type":"user","timestamp":"2026-04-14T00:00:00.000Z"}\n'
+        '{"isCompactSummary":true,"timestamp":"' + now + '"}\n'
+    )
+    monkeypatch.setattr(clawx.Path, "home", classmethod(lambda cls: tmp_path))
+    assert clawx._verify_compact_in_jsonl() is True
+
+
+def test_compact_jsonl_verifier_rejects_stale_summary(tmp_path, monkeypatch):
+    """A compact summary older than the window is treated as stale and
+    ignored. Prevents the detector from re-firing on old compactions
+    when Claude CLI replays scrollback on --continue.
+    """
+    proj = tmp_path / ".claude" / "projects" / "-home-test"
+    proj.mkdir(parents=True)
+    session = proj / "abc.jsonl"
+    session.write_text(
+        '{"isCompactSummary":true,"timestamp":"2026-04-10T00:00:00.000Z"}\n'
+    )
+    monkeypatch.setattr(clawx.Path, "home", classmethod(lambda cls: tmp_path))
+    assert clawx._verify_compact_in_jsonl() is False
 
 
 # ── Feedback modal detector tests ───────────────────────────────
