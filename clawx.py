@@ -462,15 +462,29 @@ class ClawX:
         return cmd
 
     def inject(self, text):
-        """Inject text into Claude's stdin via the PTY master."""
+        """Inject text into Claude's stdin via the PTY master.
+
+        Split the write into two os.write calls — text first, then
+        \\r alone with a short delay between. Rationale: writing
+        ``text + \\r`` as a single chunk trips Ink's TextInput paste
+        heuristic once the payload exceeds ~30-40 bytes; the trailing
+        \\r then gets absorbed as a newline-in-paste instead of an
+        Enter keystroke, so the prompt deposits into the input box
+        but never submits. Empirically reproduced 2026-04-15 with the
+        171-byte heartbeat prompt — every cron tick piled up, then an
+        unrelated short echo > mono.fifo flushed the whole stack as
+        one merged user message. Splitting the write lets Ink drain
+        and re-arm between the two calls so the \\r reads as a fresh
+        keystroke.
+        """
         if self.master_fd is None:
             self.logger.error("No active session")
             return False
         with self.write_lock:
             try:
-                # Write text + carriage return (Enter in raw terminal mode)
-                data = (text + "\r").encode("utf-8")
-                os.write(self.master_fd, data)
+                os.write(self.master_fd, text.encode("utf-8"))
+                time.sleep(0.1)
+                os.write(self.master_fd, b"\r")
                 self.logger.info(f"[Inject] {text[:200]}")
                 return True
             except Exception as e:
