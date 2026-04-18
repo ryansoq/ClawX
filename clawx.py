@@ -1231,21 +1231,29 @@ class ClawX:
         self._send_telegram(msg, tag="RateLimit")
 
     def _maybe_handle_feedback_modal(self, chunk):
-        """Detect and auto-dismiss Claude's session feedback modal."""
+        """Detect Claude's session feedback modal and dismiss with Esc.
+
+        Previously auto-wrote "0\\r" — but Ink's TUI keeps input focus on
+        the prompt textbox while the modal is overlaid, so the keystroke
+        landed in the prompt and "0" got submitted as a user message
+        (Ryan saw 9+ stray "0"s through 2026-04-18 morning). Esc is a
+        non-printable control char: Ink typically routes it to the modal
+        layer to dismiss; if it leaks to the prompt textbox it's a no-op
+        (TextInput treats Esc as cancel, no character inserted).
+        """
         now = time.time()
         if now < self._feedback_cooldown_until:
             return
-        choice = detect_feedback_modal(chunk)
-        if choice is None:
+        if detect_feedback_modal(chunk) is None:
             return
         try:
             with self.write_lock:
-                os.write(self.master_fd, f"{choice}\r".encode())
+                os.write(self.master_fd, b"\x1b")
         except OSError as e:
             self.logger.error(f"[Feedback] write failed: {e}")
             return
         self._feedback_cooldown_until = now + 300  # 5 min cooldown
-        self.logger.info("[Feedback] Auto-dismissed session feedback modal")
+        self.logger.info("[Feedback] Auto-dismissed session feedback modal (Esc)")
 
     def _maybe_handle_resume_modal(self, chunk):
         """Detect and auto-select 'Don't ask me again' on the resume-mode modal.
