@@ -78,6 +78,37 @@ STARTUP_MODAL_WINDOW_SECONDS = 60
 # Cap on buffer size we keep for detection (Claude's startup output is small).
 STARTUP_MODAL_BUFFER_LIMIT = 32 * 1024
 
+# Patterns we redact before writing to logs / forwarding off-host.
+# Conservative — better to over-redact than leak. inject() still sends
+# the unredacted payload to the PTY; only the *log* line is sanitized.
+_SECRET_PATTERNS = [
+    # Telegram bot token: <8-12 digits>:<30-40 base64url chars>
+    (re.compile(r"\b\d{8,12}:[A-Za-z0-9_\-]{30,45}\b"), "<REDACTED:tg-token>"),
+    # JWT-ish: eyJ... three dot-separated base64 segments
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "<REDACTED:jwt>"),
+    # Bearer header
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}"), "Bearer <REDACTED>"),
+    # OpenAI / Anthropic style key prefixes
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"), "<REDACTED:api-key>"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b"), "<REDACTED:anthropic-key>"),
+    # Generic key=value pairs that look like secrets
+    (re.compile(r"(?i)\b(api[_-]?key|secret|password|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}['\"]?"), r"\1=<REDACTED>"),
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Best-effort redaction of common secret formats before logging.
+
+    NOT a security boundary — defense-in-depth so a stray token in an
+    injected prompt or PTY echo doesn't sit in plaintext logs forever.
+    Callers should still avoid passing secrets through inject() at all.
+    """
+    if not text:
+        return text
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
 
 def detect_startup_modal(buf: bytes):
     """Detect a startup modal numbered-choice prompt in PTY output.
@@ -416,6 +447,9 @@ class ClawX:
         # Compact detection via PTY stream (replaced JSONL-based CompactWatcher).
         self._compact_buffer = bytearray()
         self._compact_cooldown_until = 0  # epoch; suppress rapid re-fires
+        # SIGHUP defers to _health_loop — handler must not block on
+        # config I/O / scheduler lock while main loop holds write_lock.
+        self._reload_requested = False
 
     def build_command(self):
         """Build the claude CLI command."""
@@ -485,7 +519,10 @@ class ClawX:
                 os.write(self.master_fd, text.encode("utf-8"))
                 time.sleep(0.1)
                 os.write(self.master_fd, b"\r")
-                self.logger.info(f"[Inject] {text[:200]}")
+                # Log the redacted preview — full payload still went to
+                # the PTY above, this is just to keep secrets out of
+                # plaintext logs (logs/clawx-*.log is world-readable).
+                self.logger.info(f"[Inject] {redact_secrets(text[:200])}")
                 return True
             except Exception as e:
                 self.logger.error(f"[Inject] Failed: {e}")
@@ -502,20 +539,53 @@ class ClawX:
         self.logger.info(f"FIFO ready: {FIFO_PATH}")
 
     def _fifo_reader(self):
-        """Read from FIFO and inject into Claude."""
+        """Read from FIFO and inject into Claude.
+
+        Uses non-blocking open + select so the daemon thread can exit
+        promptly when stop_event fires. The previous blocking
+        ``open(FIFO, "r")`` would park the thread inside libc's open()
+        until *some* writer connected, and ``echo > mono.fifo`` after a
+        clean shutdown could deadlock waiting for the (departed) reader.
+        """
+        import select
+        poll_timeout = 1.0  # seconds; bound on stop_event responsiveness
+        leftover = ""
         while not self.stop_event.is_set():
             try:
-                # Open blocks until a writer connects
-                with open(str(FIFO_PATH), "r") as f:
-                    for line in f:
+                fd = os.open(str(FIFO_PATH), os.O_RDONLY | os.O_NONBLOCK)
+            except OSError as e:
+                if not self.stop_event.is_set():
+                    self.logger.error(f"[FIFO] open failed: {e}")
+                    time.sleep(1)
+                continue
+            try:
+                while not self.stop_event.is_set():
+                    rlist, _, _ = select.select([fd], [], [], poll_timeout)
+                    if not rlist:
+                        continue  # timeout — re-check stop_event
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        # EOF: writer closed; re-open to wait for next writer.
+                        break
+                    text = leftover + chunk.decode("utf-8", errors="replace")
+                    *lines, leftover = text.split("\n")
+                    for line in lines:
                         line = line.strip()
                         if line and not self.stop_event.is_set():
-                            self.logger.info(f"[FIFO] Received: {line[:200]}")
+                            self.logger.info(f"[FIFO] Received: {redact_secrets(line[:200])}")
                             self.inject(line)
             except Exception as e:
                 if not self.stop_event.is_set():
                     self.logger.error(f"[FIFO] Error: {e}")
                     time.sleep(1)
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def _setup_schedules(self):
         """Set up cron-based schedules."""
@@ -666,14 +736,26 @@ class ClawX:
             self._reload_schedules()
             self.last_job_event_at = datetime.now()
 
+    def _request_reload(self, *_):
+        """SIGHUP handler — defer the heavy work to _health_loop.
+
+        Async signal-safety forbids most blocking calls in handlers, and
+        the actual reload (config read, scheduler lock, CronTrigger build)
+        can deadlock if a signal lands while the main loop holds
+        write_lock. Just flip a flag; _health_loop polls and runs the
+        real reload off the signal context.
+        """
+        self._reload_requested = True
+
     def _reload_schedules(self, *_):
         """Reload schedules from config.json without restarting ClawX.
 
-        Triggered by SIGHUP. Uses a staging pass so that a bad new config
-        cannot wipe the running schedule — the old implementation called
-        remove_all_jobs() *before* validating the new config, so one typo
-        would silently kill heartbeat + morning report until manual fix
-        (HIGH #1 in the 2026-04-13 audit). The fix:
+        Called by _health_loop when SIGHUP set _reload_requested. Uses a
+        staging pass so that a bad new config cannot wipe the running
+        schedule — the old implementation called remove_all_jobs()
+        *before* validating the new config, so one typo would silently
+        kill heartbeat + morning report until manual fix (HIGH #1 in
+        the 2026-04-13 audit). The fix:
 
           1. Reload config, keep a backup of the old one
           2. Dry-run validate every new job (CronTrigger build) into a
@@ -1066,6 +1148,11 @@ class ClawX:
             if self.stop_event.is_set():
                 break
 
+            # SIGHUP-deferred reload runs here, off the signal context.
+            if self._reload_requested:
+                self._reload_requested = False
+                self._reload_schedules()
+
             if self._is_alive():
                 uptime = str(datetime.now() - self.started_at).split(".")[0] if self.started_at else "?"
                 self._maybe_reset_restart_count()
@@ -1342,7 +1429,7 @@ class ClawX:
         signal.signal(signal.SIGINT, handle_stop)
         signal.signal(signal.SIGTERM, handle_stop)
         signal.signal(signal.SIGWINCH, handle_winch)
-        signal.signal(signal.SIGHUP, self._reload_schedules)
+        signal.signal(signal.SIGHUP, self._request_reload)
         signal.signal(signal.SIGUSR1, handle_restart)
 
         # Start background threads

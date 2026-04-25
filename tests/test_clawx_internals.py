@@ -182,6 +182,62 @@ def test_reload_schedules_handles_uninitialized_scheduler(stub_clawx):
     stub_clawx.logger.warning.assert_called()
 
 
+def test_request_reload_just_sets_flag(stub_clawx):
+    """SIGHUP handler must NOT do blocking I/O — just flip the flag.
+
+    Regression guard: if someone wires _reload_schedules back into the
+    handler directly, the handler can deadlock on write_lock or
+    scheduler internals. Async signal-safety forbids most blocking
+    calls; defer the real work to _health_loop.
+    """
+    assert stub_clawx._reload_requested is False
+    with patch.object(stub_clawx, "_reload_schedules") as reload_mock:
+        stub_clawx._request_reload()
+        # Handler must not have triggered the heavy work.
+        reload_mock.assert_not_called()
+    assert stub_clawx._reload_requested is True
+
+
+def test_redact_secrets_telegram_token():
+    """Telegram bot token format <8-12 digits>:<base64url chars> must be redacted."""
+    text = "Forwarded: TELEGRAM_BOT_TOKEN=8174523344:AAH9aaPo1qwertyABCDEFG_HIJK-LMNopqr"
+    out = clawx.redact_secrets(text)
+    assert "8174523344:AAH" not in out
+    assert "<REDACTED" in out
+
+
+def test_redact_secrets_jwt():
+    text = "Authorization: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_part_xyz123"
+    out = clawx.redact_secrets(text)
+    assert "eyJhbGciOiJIUzI1NiJ9" not in out
+    assert "<REDACTED:jwt>" in out
+
+
+def test_redact_secrets_bearer():
+    text = "curl -H 'Authorization: Bearer abcDEF1234567890xyz123_'"
+    out = clawx.redact_secrets(text)
+    assert "abcDEF1234567890xyz123_" not in out
+    assert "Bearer <REDACTED>" in out
+
+
+def test_redact_secrets_anthropic_key():
+    text = "Set ANTHROPIC_API_KEY=sk-ant-abc123def456ghi789jkl012"
+    out = clawx.redact_secrets(text)
+    assert "sk-ant-abc123" not in out
+    assert "<REDACTED" in out
+
+
+def test_redact_secrets_passthrough_on_clean_text():
+    """Normal heartbeat-style prompts must NOT be redacted."""
+    text = "Read HEARTBEAT.md if it exists. Follow it strictly."
+    assert clawx.redact_secrets(text) == text
+
+
+def test_redact_secrets_handles_none_and_empty():
+    assert clawx.redact_secrets("") == ""
+    assert clawx.redact_secrets(None) is None or clawx.redact_secrets(None) == ""
+
+
 def test_notify_compact_noop_without_chat_id(stub_clawx):
     """_notify_compact must silently return when no chat_id is configured.
     This is the default state — most users don't set up Telegram notifications.
