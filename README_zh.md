@@ -108,8 +108,34 @@ ClawX/
 ├── HEARTBEAT.md          # 定期檢查項目
 ├── heartbeat-config.json # 心跳間隔 & 安靜時段
 ├── MEMORY.md             # 長期記憶索引
-└── memory/               # 每日記憶日誌
+├── memory/               # 每日記憶日誌
+└── skills/               # 內建 skills（memory-consolidation、memory-index、...）
 ```
+
+### 內建 Skills
+
+ClawX 內建幾支可重用的指令包，放在 [`skills/`](skills/README.md)：
+
+| Skill | 做什麼 | 建議 cron |
+|---|---|---|
+| `memory-consolidation` | 週日 REM pass：把 `memory/YYYY-MM-DD.md` 整理成 `memory/weekly/YYYY-Www.md` 週報，標記已消化 daily，列出 MEMORY.md 升級候選 | `0 22 * * 0`（週日 22:00） |
+| `memory-index` | 維持 MEMORY.md 精簡：把工程性 / 主題類大區塊拆到 `memory/topics/*.md`，原位換成一行索引 | `30 22 * * 0`（週日 22:30） |
+
+把 skill 接進排程，編輯 `config.json`：
+
+```json
+"schedule": {
+  "memory-consolidation-weekly": {
+    "enabled": true,
+    "cron": "0 22 * * 0",
+    "prompt": "讀 skills/memory-consolidation/SKILL.md 然後跑本週 REM pass。"
+  }
+}
+```
+
+手動觸發直接對 agent 說：「讀 `skills/memory-consolidation/SKILL.md` 然後照做」。
+
+完整的 skill 發現 / 撰寫指南見 [`skills/README.md`](skills/README.md)。
 
 ### CLI 指令
 

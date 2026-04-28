@@ -108,8 +108,34 @@ ClawX/
 ├── HEARTBEAT.md          # Periodic check items
 ├── heartbeat-config.json # Heartbeat interval & quiet hours
 ├── MEMORY.md             # Long-term memory index
-└── memory/               # Daily memory logs
+├── memory/               # Daily memory logs
+└── skills/               # Bundled skills (memory-consolidation, memory-index, ...)
 ```
+
+### Bundled Skills
+
+ClawX ships with reusable instruction packs in [`skills/`](skills/README.md):
+
+| Skill | What it does | Suggested cron |
+|---|---|---|
+| `memory-consolidation` | Weekly REM pass: distill `memory/YYYY-MM-DD.md` into `memory/weekly/YYYY-Www.md` rollups, mark consolidated dailies, surface MEMORY.md upgrade candidates | `0 22 * * 0` (Sun 22:00) |
+| `memory-index` | Keep MEMORY.md lean: extract engineering / topic sections to `memory/topics/*.md`, replace with one-line index entries | `30 22 * * 0` (Sun 22:30) |
+
+To wire a skill into the schedule, add to `config.json`:
+
+```json
+"schedule": {
+  "memory-consolidation-weekly": {
+    "enabled": true,
+    "cron": "0 22 * * 0",
+    "prompt": "Read skills/memory-consolidation/SKILL.md and run this week's REM pass."
+  }
+}
+```
+
+To trigger manually, just tell the agent: *"Read `skills/memory-consolidation/SKILL.md` and follow it."*
+
+See [`skills/README.md`](skills/README.md) for the full skill discovery / authoring guide.
 
 ### CLI Commands
 
