@@ -498,24 +498,44 @@ class ClawX:
     def inject(self, text):
         """Inject text into Claude's stdin via the PTY master.
 
-        Split the write into two os.write calls — text first, then
-        \\r alone with a short delay between. Rationale: writing
-        ``text + \\r`` as a single chunk trips Ink's TextInput paste
-        heuristic once the payload exceeds ~30-40 bytes; the trailing
-        \\r then gets absorbed as a newline-in-paste instead of an
-        Enter keystroke, so the prompt deposits into the input box
+        Three-step sequence:
+          1. ``\\x15`` (Ctrl+U) clears any leftover characters in Ink's
+             TextInput. Without this, if a prior inject's text deposited
+             into the input box but never submitted (paste-heuristic bug),
+             this inject would land on top of it — producing a merged
+             multi-prompt blob that eventually blows past the safe size
+             ceiling and freezes the input entirely.
+          2. ``text`` is the actual payload.
+          3. ``\\r`` alone, after a short delay, fires the Enter keystroke.
+
+        The 100ms sleep between text and \\r exists for the historical
+        reason: writing ``text + \\r`` as a single chunk trips Ink's
+        TextInput paste heuristic once the payload exceeds ~30-40 bytes;
+        the trailing \\r then gets absorbed as a newline-in-paste instead
+        of an Enter keystroke, so the prompt deposits into the input box
         but never submits. Empirically reproduced 2026-04-15 with the
         171-byte heartbeat prompt — every cron tick piled up, then an
-        unrelated short echo > mono.fifo flushed the whole stack as
-        one merged user message. Splitting the write lets Ink drain
-        and re-arm between the two calls so the \\r reads as a fresh
-        keystroke.
+        unrelated short echo > mono.fifo flushed the whole stack as one
+        merged user message. Splitting the write lets Ink drain and
+        re-arm between the two calls so the \\r reads as a fresh
+        keystroke. The Ctrl+U prefix added 2026-04-29 is the belt to
+        the original suspenders: even if the previous inject's \\r was
+        eaten by paste-heuristic, the next inject's Ctrl+U clears the
+        residue before laying down fresh text.
+
+        Caveat: Ctrl+U erases anything the human user might be typing in
+        the input field at the moment of inject. Acceptable trade because
+        cron-driven injects mostly fire on quiet 30-min boundaries; the
+        reliability win on heartbeat outweighs occasional half-typed
+        message loss.
         """
         if self.master_fd is None:
             self.logger.error("No active session")
             return False
         with self.write_lock:
             try:
+                os.write(self.master_fd, b"\x15")  # clear input line
+                time.sleep(0.05)
                 os.write(self.master_fd, text.encode("utf-8"))
                 time.sleep(0.1)
                 os.write(self.master_fd, b"\r")

@@ -234,6 +234,34 @@ class TestFifoInject:
         assert result.returncode != 0, "Inject without session should fail"
         assert "FIFO not found" in result.stdout or "FIFO not found" in result.stderr
 
+    def test_inject_writes_ctrl_u_then_text_then_cr(self, tmp_path, monkeypatch):
+        """Direct test of ClawX.inject() byte sequence: \\x15 (clear line)
+        → text → \\r (Enter). Catches regressions in the three-step write.
+        """
+        mock_log = tmp_path / "mock.log"
+        config = make_config(mock_log)
+        work = setup_workdir(tmp_path, config)
+        monkeypatch.chdir(work)
+        sys.path.insert(0, str(work))
+        if "clawx" in sys.modules:
+            del sys.modules["clawx"]
+        import clawx as clawx_mod
+        try:
+            instance = clawx_mod.ClawX()
+            instance.master_fd = 99  # any non-None to pass the guard
+            writes = []
+            monkeypatch.setattr(
+                clawx_mod.os, "write", lambda fd, b: writes.append(b) or len(b)
+            )
+            ok = instance.inject("hello world")
+            assert ok is True
+            assert writes == [b"\x15", b"hello world", b"\r"], (
+                f"unexpected write sequence: {writes!r}"
+            )
+        finally:
+            sys.path.remove(str(work))
+            del sys.modules["clawx"]
+
 
 # ============================================================================
 # CONTROL TESTS
