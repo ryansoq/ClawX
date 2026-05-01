@@ -11,202 +11,222 @@ allowed-tools:
 
 # Memory Index — Long-term Memory Optimization
 
-> `MEMORY.md` 載入到每個 main session 的上下文。一旦超過 ~300 行，
-> token cost 就大到值得分流。這個 skill 把工程性、主題性的大區塊拆到
-> `memory/topics/` 下，核心人格留在 `MEMORY.md`。
+> `MEMORY.md` is loaded into every main session's context. Once it
+> exceeds ~300 lines the token cost makes it worth splitting up.
+> This skill extracts engineering-heavy / topic-heavy sections into
+> `memory/topics/`, while the core identity stays in `MEMORY.md`.
 
-## 為什麼
+## Why
 
-- `MEMORY.md` 持續膨脹，但大部分 session 只需要核心身份 + 少數相關 topic
-- 目標：`MEMORY.md` ~150-300 行（~3k tokens），按需 Read 對應 topic 檔
-- 靈感：Karpathy LLM Wiki 的「索引 + 主題頁面」結構
+- `MEMORY.md` keeps growing, but most sessions only need the core
+  identity plus a handful of relevant topics.
+- Goal: keep `MEMORY.md` at ~150–300 lines (~3k tokens), and `Read`
+  topic files on demand.
+- Inspired by Karpathy's LLM Wiki "index + topic page" structure.
 
-## 資料模型
+## Data model
 
 ```
 <workspace>/
-├── MEMORY.md                       # 索引 + 核心記憶（瘦身後 ~150-300 行）
+├── MEMORY.md                       # index + core memory (~150–300 lines after slimming)
 └── memory/
     └── topics/
-        ├── kaspa.md                # Kaspa 技術全集
-        ├── trading.md              # 策略 / 交易紀錄
-        ├── line-webhook.md         # LINE Webhook SOP
-        ├── engineering.md          # 工程紀律
-        └── ...                     # 任何 > 20 行的非核心區塊
+        ├── kaspa.md                # full Kaspa technical content
+        ├── trading.md              # strategies / trade log
+        ├── line-webhook.md         # LINE webhook SOP
+        ├── engineering.md          # engineering discipline
+        └── ...                     # any non-core block > 20 lines
 ```
 
-## 核心 vs 主題 — 分類規則
+## Core vs topic — classification rules
 
-### 🫀 核心層（永遠留在 MEMORY.md）
+### 🫀 Core layer (always stays in MEMORY.md)
 
-「我是誰」的記憶 — 每次醒來都需要：
+"Who I am" memory — needed at every wake-up:
 
-| 類型 | 範例 |
-|------|------|
-| 身份起源 | 誕生、名字、形象 |
-| User 個人資訊 | 時區、語言、偏好 |
-| 人際關係 | 重要的人、協作原則 |
-| 情感記憶 | 重要對話、里程碑 |
-| 安全機制 | 認證、紅線 |
-| 教訓 | 做事的原則（精簡版） |
-| 通訊基本資訊 | 通道優先順序（不含 SOP） |
-| 記憶備份 | repo 位置 |
-| 身份演進 timeline | 成長紀錄 |
+| Type | Examples |
+|------|----------|
+| Identity origin | birth, name, appearance |
+| User personal info | timezone, language, preferences |
+| Relationships | important people, collaboration principles |
+| Emotional memory | important conversations, milestones |
+| Safety mechanisms | auth, red lines |
+| Lessons | how-to-act principles (lean version) |
+| Comm basics | channel priority (no SOP here) |
+| Memory backups | repo locations |
+| Identity timeline | growth log |
 
-**判斷口訣**：如果拿掉這段，agent 還是不是自己？如果不是 → 留。
+**Rule of thumb**: if you remove this section, is the agent still
+itself? If not → keep it.
 
-### 📦 主題層（拆到 memory/topics/）
+### 📦 Topic layer (extract to memory/topics/)
 
-工程性、知識性的內容，需要時再 Read：
+Engineering / knowledge content read on demand:
 
-| 類型 | 範例 |
-|------|------|
-| 技術 SOP | LINE Webhook 修復、Gateway 重啟 |
-| 專案細節 | 特定產品/實驗的完整紀錄 |
-| 程式碼片段 | RPC 管理、API 用法 |
-| 架構設計 | 通用事件機制、UTXO/NFT |
-| 工具知識 | SDK 踩坑、特殊 flag |
-| 排程/cron 細節 | 排程格式、時間表 |
+| Type | Examples |
+|------|----------|
+| Technical SOP | LINE webhook recovery, gateway restart |
+| Project details | full record of a specific product / experiment |
+| Code snippets | RPC management, API usage |
+| Architecture | event mechanisms, UTXO/NFT design |
+| Tool knowledge | SDK gotchas, special flags |
+| Schedule / cron details | format, timetable |
 
-**判斷口訣**：如果只有在做特定專案時才需要 → 拆。
+**Rule of thumb**: if you only need it while working on a specific
+project → split it.
 
-### ⚠️ 灰色地帶
+### ⚠️ Gray zone
 
-橫跨兩層的：
-- **教訓**：精簡版留核心，帶程式碼的技術教訓拆到對應 topic
-- **歷史固化內容**：身份 timeline 留核心，技術筆記拆到 topics
-- **通訊**：基本資訊留，詳細 SOP 拆
+Sections that span both layers:
+- **Lessons**: keep the lean version in core; technical lessons with
+  code snippets go to a topic.
+- **Historical / fixed content**: identity timeline stays in core,
+  technical notes go to topics.
+- **Communication**: keep basic info in core, detailed SOP goes to a
+  topic.
 
-## Topic 檔案格式
+## Topic file format
 
 ```markdown
 ---
 topic: kaspa
-title: Kaspa 技術全集
+title: Kaspa Technical Reference
 extracted_from: MEMORY.md
 last_updated: 2026-04-11
 sections_merged:
-  - "Kaspa 專家（2026-02-01 起）"
-  - "Q1 Kaspa 技術筆記補充"
+  - "Kaspa Expert (since 2026-02-01)"
+  - "Q1 Kaspa technical notes addendum"
 ---
 
-# Kaspa 技術全集
+# Kaspa Technical Reference
 
-（原本在 MEMORY.md 的完整內容，保持原樣搬過來）
+(Original content from MEMORY.md, copied as-is)
 ```
 
-## MEMORY.md 索引格式
+## MEMORY.md index format
 
-拆出去的區塊在 MEMORY.md 原位替換成：
+The extracted block is replaced in MEMORY.md with:
 
 ```markdown
-## 📦 主題索引
+## 📦 Topic Index
 
-| Topic | 檔案 | 摘要 |
-|-------|------|------|
-| Kaspa | [topics/kaspa.md](memory/topics/kaspa.md) | 錢包 / SDK / 挖礦 |
-| Whisper | [topics/whisper.md](memory/topics/whisper.md) | covenant 協議 |
+| Topic | File | Summary |
+|-------|------|---------|
+| Kaspa | [topics/kaspa.md](memory/topics/kaspa.md) | wallet / SDK / mining |
+| Whisper | [topics/whisper.md](memory/topics/whisper.md) | covenant protocol |
 | ... | ... | ... |
 ```
 
-每個 topic **一行**，不超過 100 字。整個索引區 < 50 行。
+Each topic gets **one line**, ≤ 100 chars. The whole index < 50 lines.
 
-## 流程
+## Process
 
-### Step 1：量測
-
-```
-統計 MEMORY.md 各 H2 區塊的行數
-標記：> 20 行且非核心 → 候選拆出
-```
-
-### Step 2：分類
-
-對每個候選區塊判斷：
-- 核心（身份/情感/關係）→ 跳過
-- 主題（工程/知識/SOP）→ 標記拆出
-- 灰色地帶 → 精簡後留核心版，詳細版拆出
-
-### Step 3：拆出
-
-對每個要拆的區塊：
-1. 如果 `memory/topics/{topic}.md` 已存在 → **merge**（append 新內容，更新 frontmatter）
-2. 不存在 → **create**（用上面格式）
-3. 保留原始內容不修改（搬家，不改裝）
-
-### Step 4：瘦身 MEMORY.md
-
-1. 把拆出的區塊從 MEMORY.md 刪除
-2. 在「📦 主題索引」區加入對應的一行索引
-3. 確認核心區塊完整保留
-4. 確認 MEMORY.md 總行數 < 300
-
-### Step 5：驗證
-
-- 每個 topic 檔案都能被 Read
-- MEMORY.md 沒有斷裂的連結
-- 核心記憶完整
-
-### Step 6：通知（如有對外通訊）
+### Step 1: measure
 
 ```
-📚 Memory Index 優化完成
-MEMORY.md: {before} 行 → {after} 行（{saved} tokens 節省）
-拆出 {N} 個 topic 到 memory/topics/
-核心記憶：完整保留 ✅
+Count lines per H2 section in MEMORY.md.
+Mark: > 20 lines AND non-core → candidate for extraction
 ```
 
-## 第一次跑（Bootstrap）
+### Step 2: classify
 
-第一次需要大規模拆分 — 預期一次拆出 ~10-15 個 topic。
+For each candidate section:
+- Core (identity / emotion / relationships) → skip
+- Topic (engineering / knowledge / SOP) → mark for extraction
+- Gray zone → keep a slim version in core, split the detail to topics
 
-逐個 H2 區塊評估：
-1. 行數 > 20 且工程性 → 拆
-2. 行數 > 20 但情感/身份 → 留
-3. 行數 ≤ 20 → 留
+### Step 3: extract
 
-Bootstrap 完成後，`MEMORY.md` 通常剩下：
-- 起源 / 關於 user / 通訊 / 安全 / 教訓 / 身份 timeline / 主題索引
-- 大約 150-250 行
+For each section to be split:
+1. If `memory/topics/{topic}.md` already exists → **merge** (append
+   new content, refresh frontmatter).
+2. Doesn't exist → **create** in the format above.
+3. Preserve original wording (it's a move, not a rewrite).
 
-## 後續每週維護
+### Step 4: slim down MEMORY.md
 
-Bootstrap 之後，每週只需要：
-1. 檢查 `MEMORY.md` 有沒有新增的大區塊（REM Pass 可能升級了新內容）
-2. 如果有 > 20 行的工程性新區塊 → 拆到對應 topic
-3. 如果某 topic 被頻繁使用 → 考慮精簡版留核心
-4. 更新索引
+1. Remove the extracted section from MEMORY.md.
+2. Add the corresponding one-line entry to "📦 Topic Index".
+3. Verify core sections are still intact.
+4. Verify total line count of MEMORY.md < 300.
 
-## 觸發方式
+### Step 5: validate
 
-- **自動**：cron `30 22 * * 0`（每週日 22:30，REM Pass 22:00 之後）— 設在
-  ClawX `config.json` 的 `schedule` 區塊
-- **手動**：對 agent 說「跑 memory-index skill」/「優化 MEMORY.md」
-- **Bootstrap**：對 agent 說「跑 memory-index 的 bootstrap」
+- Every topic file is readable.
+- MEMORY.md has no broken links.
+- Core memory is preserved.
 
-## 不要做的事
+### Step 6: notify (if you have an outbound channel)
 
-- ❌ 不要修改 topic 檔案的實質內容（只搬家，不改裝）
-- ❌ 不要刪除核心記憶（身份/情感/關係）
-- ❌ 不要把整個 MEMORY.md 砍掉重寫（漸進式拆分）
-- ❌ 不要自動合併 topic（每個 topic 獨立管理）
-- ❌ 不要動 `memory/*.json` 狀態檔
-- ❌ 不要動 `memory/` 下非 topic 的工具檔（template / config）
-- ❌ 不要動 `memory/weekly/` 週報檔
+```
+📚 Memory Index optimization complete
+MEMORY.md: {before} lines → {after} lines (saved {saved} tokens)
+Extracted {N} topics into memory/topics/
+Core memory: fully preserved ✅
+```
 
-## 與 memory-consolidation 的關係
+## First run (Bootstrap)
 
-兩支 skill 互補，週日依序跑：
+The first run is large — expect to extract ~10–15 topics.
+
+For each H2 section:
+1. Lines > 20 AND engineering-heavy → split.
+2. Lines > 20 BUT identity / emotion → keep.
+3. Lines ≤ 20 → keep.
+
+After bootstrap, MEMORY.md typically holds:
+- Origin / about user / communication / safety / lessons /
+  identity timeline / topic index
+- Roughly 150–250 lines.
+
+## Weekly maintenance
+
+After bootstrap, the weekly job is small:
+1. Check whether MEMORY.md grew new large sections (the REM Pass may
+   have promoted new content).
+2. If a new engineering-heavy section > 20 lines exists → extract to
+   the matching topic.
+3. If a topic is referenced very often → consider keeping a lean
+   version inline in core.
+4. Refresh the topic index.
+
+## How it gets triggered
+
+- **Automatic**: cron `30 22 * * 0` (every Sunday 22:30, after the
+  22:00 REM Pass) — set in the ClawX `config.json` `schedule` block.
+- **Manual**: tell the agent "run the memory-index skill" or
+  "optimize MEMORY.md".
+- **Bootstrap**: tell the agent "run the memory-index bootstrap".
+
+## Don't
+
+- ❌ Don't modify the substantive content of a topic file (move, don't
+  rewrite).
+- ❌ Don't delete core memory (identity / emotion / relationships).
+- ❌ Don't drop the entire MEMORY.md and rewrite from scratch
+  (incremental splitting only).
+- ❌ Don't auto-merge topics (each topic is managed independently).
+- ❌ Don't touch `memory/*.json` state files.
+- ❌ Don't touch non-topic utility files under `memory/` (templates,
+  configs, etc.).
+- ❌ Don't touch weekly rollup files under `memory/weekly/`.
+
+## Relationship to memory-consolidation
+
+The two skills are complementary and run sequentially every Sunday:
 
 ```
 22:00  memory-consolidation
        → daily notes → weekly rollup
-       → 可能升級 MEMORY.md（加入新內容）
+       → may promote new content into MEMORY.md
 
-22:30  memory-index (本 skill)
-       → 掃 MEMORY.md
-       → 工程性大區塊 → 拆到 topics/
-       → MEMORY.md 保持精簡
+22:30  memory-index (this skill)
+       → scan MEMORY.md
+       → engineering-heavy sections → split into topics/
+       → keep MEMORY.md lean
 ```
 
-REM 負責「短期 → 長期」，Index 負責「長期記憶瘦身」。
+REM handles "short-term → long-term"; Index handles "long-term memory
+slimming".
+
+> 中文版本：[`SKILL_zh.md`](SKILL_zh.md)
